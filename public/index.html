@@ -109,6 +109,7 @@
   .confirm-panel select { width: auto; }
   .confirm-error { color: var(--stamp-red); font-size: 11px; }
   .member-pin-row { display: flex; align-items: center; gap: 8px; margin: 2px 0 14px; flex-wrap: wrap; }
+  .task-pin-panel { display: flex; width: 100%; margin: 8px 0 0; }
   @media (max-width: 760px) {
     .ledger-app { flex-direction: column; }
     .sidebar { width: 100%; flex-direction: row; align-items: center; padding: 12px 14px; gap: 14px; overflow-x: auto; }
@@ -531,7 +532,7 @@
     });
     return (
       '<div class="list-header"><h2 class="panel-title" style="margin:0;">Pendientes de ' + escapeHtml(me.name) + '</h2>' +
-      '<button type="button" class="link-btn" id="change-identity-btn">No soy yo, cambiar</button></div>' +
+      '<button type="button" class="btn-secondary" id="change-identity-btn">No soy yo, cambiar</button></div>' +
       (myTasks.length === 0 ? '<p class="empty">No tienes tareas pendientes.</p>' :
         '<div class="board-col-body">' + myTasks.map(taskCardHTML).join("") + '</div>')
     );
@@ -548,6 +549,7 @@
       clearMyIdentity();
       renderTabContent();
     });
+    bindTaskCardEvents();
   }
 
   // ---------- Gastos ----------
@@ -647,11 +649,14 @@
       '<div class="board">' + boardCols + '</div>'
     );
   }
+  var pendingTaskChanges = {};
   function taskCardHTML(t) {
     var overdue = t.dueDate && t.status !== "hecho" && t.status !== "cancelada" && t.dueDate < todayISO();
     var meta = STATUS_META[t.status] || STATUS_META.pendiente;
     var priorityObj = PRIORITIES.find(function(p){ return p.id === t.priority; });
     var priorityLabel = priorityObj ? priorityObj.label : "";
+    var assignee = state.team.find(function(m){ return m.id === t.assignee; });
+    var lockName = assignee ? assignee.name : "el asignado";
     return (
       '<div class="task-card">' +
         '<div class="task-card-top"><span class="stamp stamp-' + t.status + '">' + meta.label + '</span>' +
@@ -669,8 +674,85 @@
           '<button class="link-btn" data-cancel-task="' + t.id + '">Cancelar</button>' :
           '<button class="link-btn" data-reactivate-task="' + t.id + '">Reactivar</button>') +
         '<button class="icon-btn" data-delete-task="' + t.id + '" aria-label="Eliminar tarea">✕</button></div>' +
+        '<div class="task-pin-panel confirm-panel" id="task-pin-panel-' + t.id + '" style="display:none">' +
+          '<span class="hint" style="margin:0;">Clave de ' + escapeHtml(lockName) + ':</span>' +
+          '<input type="password" inputmode="numeric" maxlength="4" placeholder="Clave" id="task-pin-' + t.id + '" style="max-width:90px;" />' +
+          '<button type="button" class="btn-secondary" style="margin-top:0;" data-task-pin-submit="' + t.id + '">Guardar</button>' +
+          '<button type="button" class="link-btn" data-task-pin-cancel="' + t.id + '">Cancelar</button>' +
+          '<span class="confirm-error" id="task-pin-error-' + t.id + '"></span>' +
+        '</div>' +
       '</div>'
     );
+  }
+  function requestTaskChange(id, change) {
+    var task = state.tasks.find(function(t){ return t.id === id; });
+    if (!task) return;
+    var assignee = state.team.find(function(m){ return m.id === task.assignee; });
+    if (!assignee || !assignee.pinHash) {
+      updateTask(id, change);
+      return;
+    }
+    pendingTaskChanges[id] = change;
+    var panel = document.getElementById("task-pin-panel-" + id);
+    if (panel) panel.style.display = "flex";
+  }
+  function bindTaskCardEvents() {
+    document.querySelectorAll("[data-progress]").forEach(function(input){
+      input.addEventListener("input", function(e){
+        var label = document.getElementById("progress-label-" + input.dataset.progress);
+        if (label) label.textContent = e.target.value + "%";
+      });
+      input.addEventListener("change", function(e){
+        var id = input.dataset.progress;
+        var v = Number(e.target.value);
+        var status = "en_proceso";
+        if (v <= 0) status = "pendiente";
+        if (v >= 100) status = "hecho";
+        requestTaskChange(id, { progress: v, status: status });
+      });
+    });
+    document.querySelectorAll("[data-cancel-task]").forEach(function(btn){
+      btn.addEventListener("click", function(){ requestTaskChange(btn.dataset.cancelTask, { status: "cancelada" }); });
+    });
+    document.querySelectorAll("[data-reactivate-task]").forEach(function(btn){
+      btn.addEventListener("click", function(){ requestTaskChange(btn.dataset.reactivateTask, { status: "pendiente", progress: 0 }); });
+    });
+    document.querySelectorAll("[data-delete-task]").forEach(function(btn){
+      btn.addEventListener("click", function(){ deleteTask(btn.dataset.deleteTask); });
+    });
+    document.querySelectorAll("[data-task-pin-submit]").forEach(function(btn){
+      btn.addEventListener("click", async function(){
+        var id = btn.dataset.taskPinSubmit;
+        var task = state.tasks.find(function(t){ return t.id === id; });
+        var assignee = task ? state.team.find(function(m){ return m.id === task.assignee; }) : null;
+        var pinInput = document.getElementById("task-pin-" + id);
+        var errorSlot = document.getElementById("task-pin-error-" + id);
+        var pin = pinInput.value.trim();
+        errorSlot.textContent = "";
+        if (!assignee || !assignee.pinHash) { errorSlot.textContent = "Sin clave configurada."; return; }
+        if (!/^\d{4}$/.test(pin)) { errorSlot.textContent = "Clave de 4 dígitos."; return; }
+        var hash = await sha256Hex(pin);
+        if (hash !== assignee.pinHash) { errorSlot.textContent = "Clave incorrecta."; return; }
+        var change = pendingTaskChanges[id];
+        delete pendingTaskChanges[id];
+        if (change) updateTask(id, change);
+      });
+    });
+    document.querySelectorAll("[data-task-pin-cancel]").forEach(function(btn){
+      btn.addEventListener("click", function(){
+        var id = btn.dataset.taskPinCancel;
+        delete pendingTaskChanges[id];
+        var panel = document.getElementById("task-pin-panel-" + id);
+        if (panel) panel.style.display = "none";
+        var task = state.tasks.find(function(t){ return t.id === id; });
+        var slider = document.querySelector('[data-progress="' + id + '"]');
+        if (slider && task) {
+          slider.value = task.progress || 0;
+          var label = document.getElementById("progress-label-" + id);
+          if (label) label.textContent = (task.progress||0) + "%";
+        }
+      });
+    });
   }
   function bindTareasEvents() {
     document.getElementById("task-form").addEventListener("submit", function(e){
@@ -693,28 +775,7 @@
       state.tareasShowCancelled = e.target.checked;
       renderTabContent();
     });
-    document.querySelectorAll("[data-progress]").forEach(function(input){
-      input.addEventListener("input", function(e){
-        document.getElementById("progress-label-" + input.dataset.progress).textContent = e.target.value + "%";
-      });
-      input.addEventListener("change", function(e){
-        var id = input.dataset.progress;
-        var v = Number(e.target.value);
-        var status = "en_proceso";
-        if (v <= 0) status = "pendiente";
-        if (v >= 100) status = "hecho";
-        updateTask(id, { progress: v, status: status });
-      });
-    });
-    document.querySelectorAll("[data-cancel-task]").forEach(function(btn){
-      btn.addEventListener("click", function(){ updateTask(btn.dataset.cancelTask, { status: "cancelada" }); });
-    });
-    document.querySelectorAll("[data-reactivate-task]").forEach(function(btn){
-      btn.addEventListener("click", function(){ updateTask(btn.dataset.reactivateTask, { status: "pendiente", progress: 0 }); });
-    });
-    document.querySelectorAll("[data-delete-task]").forEach(function(btn){
-      btn.addEventListener("click", function(){ deleteTask(btn.dataset.deleteTask); });
-    });
+    bindTaskCardEvents();
   }
 
   // ---------- Aportaciones ----------
