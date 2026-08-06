@@ -164,9 +164,11 @@
     return m ? m.name : "Sin asignar";
   }
 
+  var API_BASE = "/control/api/data/";
+
   async function loadKey(key, fallback) {
     try {
-      var res = await fetch("/api/data/" + key);
+      var res = await fetch(API_BASE + key);
       if (!res.ok) return fallback;
       var val = await res.json();
       return (val === null || val === undefined) ? fallback : val;
@@ -174,7 +176,7 @@
   }
   async function saveKey(key, value) {
     try {
-      var res = await fetch("/api/data/" + key, {
+      var res = await fetch(API_BASE + key, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(value)
