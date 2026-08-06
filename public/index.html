@@ -122,6 +122,22 @@
     .board { grid-template-columns: 1fr; }
     .stat-grid { grid-template-columns: 1fr; }
     .two-col { grid-template-columns: 1fr; }
+    .content { overflow-x: hidden; padding: 16px; }
+    .cat-bar-label { width: 90px; font-size: 11px; }
+    .cat-bar-value { width: 64px; font-size: 11px; }
+    table, table thead, table tbody, table th, table td, table tr { display: block; width: 100%; }
+    table thead { position: absolute; left: -9999px; top: -9999px; }
+    table tr { border: 1px solid var(--paper-line); border-radius: 8px; padding: 8px 10px; margin-bottom: 10px; background: #fff; }
+    table td { border: none; padding: 6px 0; }
+    table td[data-label]:not([data-label=""])::before {
+      content: attr(data-label);
+      display: block;
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--text-muted);
+    }
+    .confirm-panel { display: flex; margin-left: 0; margin-top: 6px; }
   }
 </style>
 </head>
@@ -581,11 +597,11 @@
         (sorted.length === 0 ? '<p class="empty">Aún no hay gastos registrados en este periodo.</p>' :
           '<table><thead><tr><th>Fecha</th><th>Categoría</th><th>Descripción</th><th>Pagó</th><th>Monto</th><th>Estado</th><th></th></tr></thead><tbody>' +
           sorted.map(function(e){
-            return '<tr><td class="mono">' + e.date + '</td><td>' + escapeHtml(e.category) + '</td><td>' +
-              (escapeHtml(e.description) || "—") + '</td><td>' + escapeHtml(memberName(e.paidBy)) + '</td>' +
-              '<td class="mono amount">' + currency(e.amount) + '</td>' +
-              '<td>' + confirmStampHTML(e) + confirmControlHTML(e, "expenses") + '</td>' +
-              '<td><button class="icon-btn" data-delete-expense="' + e.id + '" aria-label="Eliminar gasto">✕</button></td></tr>';
+            return '<tr><td class="mono" data-label="Fecha">' + e.date + '</td><td data-label="Categoría">' + escapeHtml(e.category) + '</td><td data-label="Descripción">' +
+              (escapeHtml(e.description) || "—") + '</td><td data-label="Pagó">' + escapeHtml(memberName(e.paidBy)) + '</td>' +
+              '<td class="mono amount" data-label="Monto">' + currency(e.amount) + '</td>' +
+              '<td data-label="Estado">' + confirmStampHTML(e) + confirmControlHTML(e, "expenses") + '</td>' +
+              '<td data-label=""><button class="icon-btn" data-delete-expense="' + e.id + '" aria-label="Eliminar gasto">✕ Eliminar</button></td></tr>';
           }).join("") + '</tbody></table>') +
       '</div>'
     );
@@ -808,10 +824,10 @@
         (sorted.length === 0 ? '<p class="empty">Todavía no hay aportaciones registradas.</p>' :
           '<table><thead><tr><th>Fecha</th><th>Quién</th><th>Concepto</th><th>Monto</th><th>Estado</th><th></th></tr></thead><tbody>' +
           sorted.map(function(c){
-            return '<tr><td class="mono">' + c.date + '</td><td>' + escapeHtml(memberName(c.memberId)) + '</td><td>' +
-              (escapeHtml(c.note) || "—") + '</td><td class="mono amount">' + currency(c.amount) + '</td>' +
-              '<td>' + confirmStampHTML(c) + confirmControlHTML(c, "contributions") + '</td>' +
-              '<td><button class="icon-btn" data-delete-contribution="' + c.id + '" aria-label="Eliminar aportación">✕</button></td></tr>';
+            return '<tr><td class="mono" data-label="Fecha">' + c.date + '</td><td data-label="Quién">' + escapeHtml(memberName(c.memberId)) + '</td><td data-label="Concepto">' +
+              (escapeHtml(c.note) || "—") + '</td><td class="mono amount" data-label="Monto">' + currency(c.amount) + '</td>' +
+              '<td data-label="Estado">' + confirmStampHTML(c) + confirmControlHTML(c, "contributions") + '</td>' +
+              '<td data-label=""><button class="icon-btn" data-delete-contribution="' + c.id + '" aria-label="Eliminar aportación">✕ Eliminar</button></td></tr>';
           }).join("") + '</tbody></table>') +
       '</div>'
     );
