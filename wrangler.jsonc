@@ -1,0 +1,13 @@
+{
+  "name": "control-hemci",
+  "compatibility_date": "2026-06-19",
+  "main": "worker.js",
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application"
+  },
+  "kv_namespaces": [
+    { "binding": "HEMCI_KV", "id": "PON_AQUI_EL_ID_DE_TU_NAMESPACE" }
+  ]
+}
