@@ -8,6 +8,6 @@
     "not_found_handling": "single-page-application"
   },
   "kv_namespaces": [
-    { "binding": "HEMCI_KV", "id": "PON_AQUI_EL_ID_DE_TU_NAMESPACE" }
+    { "binding": "HEMCI_KV", "id": "3b055003bacc48f7804c96fbdaad5f3e" }
   ]
 }
