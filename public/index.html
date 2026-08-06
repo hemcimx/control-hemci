@@ -778,12 +778,15 @@
   function equipoHTML() {
     var rows = state.team.map(function(m){
       var pinStatus = m.pinHash ? "Clave configurada ✓" : "Sin clave todavía";
+      var currentPinField = m.pinHash ?
+        '<input type="password" inputmode="numeric" maxlength="4" placeholder="Clave actual" id="pin-current-' + m.id + '" style="max-width:140px;" />' : "";
       return (
         '<div class="member-row"><input type="text" value="' + escapeHtml(m.name) + '" data-member-id="' + m.id + '" />' +
           '<button class="icon-btn" data-remove-member="' + m.id + '" ' + (state.team.length <= 1 ? "disabled" : "") + ' aria-label="Eliminar integrante">✕</button></div>' +
         '<div class="member-pin-row">' +
           '<span class="hint" style="margin:0;">' + pinStatus + '</span>' +
-          '<input type="password" inputmode="numeric" maxlength="4" placeholder="Nueva clave (4 dígitos)" id="pin-input-' + m.id + '" style="max-width:170px;" />' +
+          currentPinField +
+          '<input type="password" inputmode="numeric" maxlength="4" placeholder="' + (m.pinHash ? "Clave nueva" : "Nueva clave (4 dígitos)") + '" id="pin-input-' + m.id + '" style="max-width:170px;" />' +
           '<button type="button" class="btn-secondary" style="margin-top:0;" data-set-pin="' + m.id + '">Guardar clave</button>' +
         '</div>'
       );
@@ -791,7 +794,7 @@
     return (
       '<h2 class="panel-title">Equipo</h2>' +
       '<div class="card">' +
-        '<p class="hint">Estos nombres se usan para asignar tareas y para registrar quién paga cada gasto. Los datos se comparten entre quienes visiten esta página. Cada integrante puede poner su propia clave de 4 dígitos — se usa para confirmar gastos y aportaciones, como firma de autorización.</p>' +
+        '<p class="hint">Estos nombres se usan para asignar tareas y para registrar quién paga cada gasto. Los datos se comparten entre quienes visiten esta página. Cada integrante puede poner su propia clave de 4 dígitos — se usa para confirmar gastos y aportaciones, como firma de autorización. Para cambiar una clave ya existente hace falta escribir la clave actual.</p>' +
         '<div id="member-rows">' + rows + '</div>' +
         '<button type="button" class="btn-secondary" id="add-member-btn">+ Agregar integrante</button>' +
       '</div>'
@@ -817,11 +820,19 @@
     document.querySelectorAll("[data-set-pin]").forEach(function(btn){
       btn.addEventListener("click", async function(){
         var id = btn.dataset.setPin;
-        var input = document.getElementById("pin-input-" + id);
-        var pin = input.value.trim();
-        if (!/^\d{4}$/.test(pin)) { flash("La clave debe ser de exactamente 4 dígitos.", true); return; }
-        var hash = await sha256Hex(pin);
-        var next = state.team.map(function(m){ return m.id === id ? Object.assign({}, m, { pinHash: hash }) : m; });
+        var member = state.team.find(function(m){ return m.id === id; });
+        var newInput = document.getElementById("pin-input-" + id);
+        var newPin = newInput.value.trim();
+        if (!/^\d{4}$/.test(newPin)) { flash("La clave debe ser de exactamente 4 dígitos.", true); return; }
+        if (member && member.pinHash) {
+          var currentInput = document.getElementById("pin-current-" + id);
+          var currentPin = currentInput ? currentInput.value.trim() : "";
+          if (!/^\d{4}$/.test(currentPin)) { flash("Escribe tu clave actual para poder cambiarla.", true); return; }
+          var currentHash = await sha256Hex(currentPin);
+          if (currentHash !== member.pinHash) { flash("La clave actual no es correcta.", true); return; }
+        }
+        var newHash = await sha256Hex(newPin);
+        var next = state.team.map(function(m){ return m.id === id ? Object.assign({}, m, { pinHash: newHash }) : m; });
         await saveTeam(next);
         flash("Clave guardada.");
       });
