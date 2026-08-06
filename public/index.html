@@ -105,6 +105,10 @@
   .feed-item { font-size: 13px; padding: 8px 0; border-bottom: 1px dashed var(--paper-line); }
   .feed-item:last-child { border-bottom: none; }
   .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .confirm-panel { display: inline-flex; align-items: center; gap: 6px; margin-left: 8px; vertical-align: middle; flex-wrap: wrap; }
+  .confirm-panel select { width: auto; }
+  .confirm-error { color: var(--stamp-red); font-size: 11px; }
+  .member-pin-row { display: flex; align-items: center; gap: 8px; margin: 2px 0 14px; flex-wrap: wrap; }
   @media (max-width: 760px) {
     .ledger-app { flex-direction: column; }
     .sidebar { width: 100%; flex-direction: row; align-items: center; padding: 12px 14px; gap: 14px; overflow-x: auto; }
@@ -125,6 +129,7 @@
 <script>
   var CATEGORIES = ["Insumos", "Servicios y suscripciones", "Renta", "Nómina", "Marketing", "Transporte", "Equipo y herramientas", "Impuestos", "Otro"];
   var PRIORITIES = [{id:"alta",label:"Alta"},{id:"media",label:"Media"},{id:"baja",label:"Baja"}];
+  var PRIORITY_ORDER = { alta: 0, media: 1, baja: 2 };
   var STATUS_META = {
     pendiente: { label: "Pendiente" },
     en_proceso: { label: "En proceso" },
@@ -144,6 +149,9 @@
     gastosMonthFilter: new Date().toISOString().slice(0,7),
     tareasShowCancelled: false
   };
+  if (window.matchMedia && window.matchMedia("(max-width: 760px)").matches) {
+    state.tab = "mis-pendientes";
+  }
 
   function uid() {
     return (crypto.randomUUID ? crypto.randomUUID() : Date.now() + "-" + Math.random().toString(16).slice(2));
@@ -162,6 +170,92 @@
   function memberName(id) {
     var m = state.team.find(function(x){ return x.id === id; });
     return m ? m.name : "Sin asignar";
+  }
+
+  async function sha256Hex(text) {
+    var enc = new TextEncoder().encode(text);
+    var buf = await crypto.subtle.digest("SHA-256", enc);
+    return Array.from(new Uint8Array(buf)).map(function(b){ return b.toString(16).padStart(2, "0"); }).join("");
+  }
+
+  function getMyIdentity() {
+    try { return localStorage.getItem("hemci-my-id") || null; } catch (e) { return null; }
+  }
+  function setMyIdentity(id) {
+    try { localStorage.setItem("hemci-my-id", id); } catch (e) {}
+  }
+  function clearMyIdentity() {
+    try { localStorage.removeItem("hemci-my-id"); } catch (e) {}
+  }
+
+  function isFullyConfirmed(entry) {
+    var confirmedBy = entry.confirmedBy || [];
+    return state.team.length > 0 && state.team.every(function(m){ return confirmedBy.indexOf(m.id) !== -1; });
+  }
+  function confirmStampHTML(entry) {
+    var confirmedBy = entry.confirmedBy || [];
+    if (isFullyConfirmed(entry)) return '<span class="stamp stamp-hecho">Confirmada</span>';
+    if (confirmedBy.length === 0) return '<span class="stamp stamp-pendiente">Pendiente</span>';
+    var missing = state.team.filter(function(m){ return confirmedBy.indexOf(m.id) === -1; }).map(function(m){ return m.name; }).join(", ");
+    return '<span class="stamp stamp-en_proceso">Falta: ' + escapeHtml(missing) + '</span>';
+  }
+  function confirmControlHTML(entry, kind) {
+    var confirmedBy = entry.confirmedBy || [];
+    var pending = state.team.filter(function(m){ return confirmedBy.indexOf(m.id) === -1; });
+    if (pending.length === 0) return "";
+    var rowId = kind + "-" + entry.id;
+    var options = pending.map(function(m){ return '<option value="' + m.id + '">' + escapeHtml(m.name) + '</option>'; }).join("");
+    return (
+      '<button type="button" class="link-btn" data-toggle-confirm="' + rowId + '">Confirmar</button>' +
+      '<div class="confirm-panel" id="confirm-panel-' + rowId + '" style="display:none">' +
+        '<select id="confirm-member-' + rowId + '">' + options + '</select>' +
+        '<input type="password" inputmode="numeric" maxlength="4" placeholder="Clave" id="confirm-pin-' + rowId + '" style="max-width:90px;" />' +
+        '<button type="button" class="btn-secondary" data-confirm-submit="' + rowId + '" data-confirm-id="' + entry.id + '" data-confirm-kind="' + kind + '">OK</button>' +
+        '<span class="confirm-error" id="confirm-error-' + rowId + '"></span>' +
+      '</div>'
+    );
+  }
+  async function confirmEntry(kind, id, memberId, pin) {
+    var member = state.team.find(function(m){ return m.id === memberId; });
+    if (!member) return { ok: false, error: "Integrante no encontrado." };
+    if (!member.pinHash) return { ok: false, error: "Sin clave configurada (ve a Equipo)." };
+    var hash = await sha256Hex(pin);
+    if (hash !== member.pinHash) return { ok: false, error: "Clave incorrecta." };
+    var list = kind === "expenses" ? state.expenses : state.contributions;
+    var next = list.map(function(item){
+      if (item.id !== id) return item;
+      var confirmedBy = item.confirmedBy || [];
+      if (confirmedBy.indexOf(memberId) === -1) confirmedBy = confirmedBy.concat([memberId]);
+      return Object.assign({}, item, { confirmedBy: confirmedBy });
+    });
+    if (kind === "expenses") { state.expenses = next; await saveKey("expenses", next); }
+    else { state.contributions = next; await saveKey("contributions", next); }
+    flash("Confirmado.");
+    renderTabContent();
+    return { ok: true };
+  }
+  function bindConfirmEvents() {
+    document.querySelectorAll("[data-toggle-confirm]").forEach(function(btn){
+      btn.addEventListener("click", function(){
+        var panel = document.getElementById("confirm-panel-" + btn.dataset.toggleConfirm);
+        if (panel) panel.style.display = (panel.style.display === "none") ? "flex" : "none";
+      });
+    });
+    document.querySelectorAll("[data-confirm-submit]").forEach(function(btn){
+      btn.addEventListener("click", async function(){
+        var rowId = btn.dataset.confirmSubmit;
+        var entryId = btn.dataset.confirmId;
+        var kind = btn.dataset.confirmKind;
+        var memberSel = document.getElementById("confirm-member-" + rowId);
+        var pinInput = document.getElementById("confirm-pin-" + rowId);
+        var errorSlot = document.getElementById("confirm-error-" + rowId);
+        var pin = pinInput.value.trim();
+        errorSlot.textContent = "";
+        if (!/^\d{4}$/.test(pin)) { errorSlot.textContent = "Clave de 4 dígitos."; return; }
+        var result = await confirmEntry(kind, entryId, memberSel.value, pin);
+        if (!result.ok) errorSlot.textContent = result.error;
+      });
+    });
   }
 
   var API_BASE = "/betoalex/api/data/";
@@ -214,7 +308,7 @@
   }
 
   async function addExpense(exp) {
-    var item = Object.assign({}, exp, { id: uid(), createdAt: Date.now() });
+    var item = Object.assign({}, exp, { id: uid(), createdAt: Date.now(), confirmedBy: [] });
     state.expenses = [item].concat(state.expenses);
     var ok = await saveKey("expenses", state.expenses);
     flash(ok ? "Gasto registrado." : "No se pudo guardar el gasto.", !ok);
@@ -243,7 +337,7 @@
     renderTabContent();
   }
   async function addContribution(c) {
-    var item = Object.assign({}, c, { id: uid(), createdAt: Date.now() });
+    var item = Object.assign({}, c, { id: uid(), createdAt: Date.now(), confirmedBy: [] });
     state.contributions = [item].concat(state.contributions);
     var ok = await saveKey("contributions", state.contributions);
     flash(ok ? "Aportación registrada." : "No se pudo guardar la aportación.", !ok);
@@ -283,6 +377,7 @@
           '</div>' +
           '<nav class="tabs">' +
             tabButton("resumen", "Resumen") +
+            tabButton("mis-pendientes", "Mis pendientes") +
             tabButton("gastos", "Gastos") +
             tabButton("aportaciones", "Aportaciones") +
             tabButton("tareas", "Tareas") +
@@ -334,6 +429,7 @@
   }
   function tabContentHTML() {
     if (state.tab === "resumen") return resumenHTML();
+    if (state.tab === "mis-pendientes") return misPendientesHTML();
     if (state.tab === "gastos") return gastosHTML();
     if (state.tab === "aportaciones") return aportacionesHTML();
     if (state.tab === "tareas") return tareasHTML();
@@ -341,6 +437,7 @@
     return "";
   }
   function bindTabEvents() {
+    if (state.tab === "mis-pendientes") bindMisPendientesEvents();
     if (state.tab === "gastos") bindGastosEvents();
     if (state.tab === "aportaciones") bindAportacionesEvents();
     if (state.tab === "tareas") bindTareasEvents();
@@ -350,7 +447,11 @@
   // ---------- Resumen ----------
   function resumenHTML() {
     var monthKey = todayISO().slice(0, 7);
-    var monthExpenses = state.expenses.filter(function(e){ return e.date && e.date.slice(0,7) === monthKey; });
+    var confirmedExpenses = state.expenses.filter(isFullyConfirmed);
+    var confirmedContributions = state.contributions.filter(isFullyConfirmed);
+    var pendingExpenses = state.expenses.length - confirmedExpenses.length;
+    var pendingContributions = state.contributions.length - confirmedContributions.length;
+    var monthExpenses = confirmedExpenses.filter(function(e){ return e.date && e.date.slice(0,7) === monthKey; });
     var monthTotal = monthExpenses.reduce(function(s,e){ return s + Number(e.amount || 0); }, 0);
     var categoryTotals = {};
     monthExpenses.forEach(function(e){ categoryTotals[e.category] = (categoryTotals[e.category] || 0) + Number(e.amount || 0); });
@@ -359,8 +460,8 @@
     var active = state.tasks.filter(function(t){ return t.status !== "cancelada"; });
     var pendientes = state.tasks.filter(function(t){ return t.status === "pendiente"; }).length;
     var avgProgress = active.length ? Math.round(active.reduce(function(s,t){ return s + Number(t.progress || 0); }, 0) / active.length) : 0;
-    var totalAportado = state.contributions.reduce(function(s,c){ return s + Number(c.amount || 0); }, 0);
-    var totalGastadoTodo = state.expenses.reduce(function(s,e){ return s + Number(e.amount || 0); }, 0);
+    var totalAportado = confirmedContributions.reduce(function(s,c){ return s + Number(c.amount || 0); }, 0);
+    var totalGastadoTodo = confirmedExpenses.reduce(function(s,e){ return s + Number(e.amount || 0); }, 0);
     var disponible = totalAportado - totalGastadoTodo;
     var upcoming = state.tasks.filter(function(t){ return t.dueDate && t.status !== "hecho" && t.status !== "cancelada"; })
       .sort(function(a,b){ return a.dueDate.localeCompare(b.dueDate); }).slice(0,5);
@@ -370,6 +471,8 @@
 
     return (
       '<h2 class="panel-title">Resumen</h2>' +
+      (pendingExpenses + pendingContributions > 0 ?
+        '<p class="hint">⚠ ' + (pendingExpenses + pendingContributions) + ' movimiento(s) esperando confirmación de clave — no cuentan todavía en los totales de abajo.</p>' : '') +
       '<div class="stat-grid">' +
         '<div class="stat-card"><div class="stat-label">Gastado este mes</div><div class="stat-value">' + currency(monthTotal) + '</div></div>' +
         '<div class="stat-card"><div class="stat-label">Tareas pendientes</div><div class="stat-value">' + pendientes + '</div></div>' +
@@ -400,11 +503,59 @@
     );
   }
 
+  // ---------- Mis pendientes ----------
+  function misPendientesHTML() {
+    var myId = getMyIdentity();
+    var me = myId ? state.team.find(function(m){ return m.id === myId; }) : null;
+    if (!me) {
+      var buttons = state.team.map(function(m){
+        return '<button type="button" class="btn-secondary" data-pick-identity="' + m.id + '">' + escapeHtml(m.name) + '</button>';
+      }).join(" ");
+      return (
+        '<h2 class="panel-title">Mis pendientes</h2>' +
+        '<div class="card">' +
+          '<p class="hint">¿Quién eres? Elige tu nombre para ver solo tus pendientes, sin distracciones de las del otro.</p>' +
+          '<div style="display:flex; gap:10px; flex-wrap:wrap;">' + buttons + '</div>' +
+        '</div>'
+      );
+    }
+    var myTasks = state.tasks.filter(function(t){ return t.assignee === myId && (t.status === "pendiente" || t.status === "en_proceso"); });
+    myTasks.sort(function(a, b){
+      var pa = PRIORITY_ORDER[a.priority] != null ? PRIORITY_ORDER[a.priority] : 3;
+      var pb = PRIORITY_ORDER[b.priority] != null ? PRIORITY_ORDER[b.priority] : 3;
+      if (pa !== pb) return pa - pb;
+      if (a.dueDate && b.dueDate) return a.dueDate.localeCompare(b.dueDate);
+      if (a.dueDate) return -1;
+      if (b.dueDate) return 1;
+      return 0;
+    });
+    return (
+      '<div class="list-header"><h2 class="panel-title" style="margin:0;">Pendientes de ' + escapeHtml(me.name) + '</h2>' +
+      '<button type="button" class="link-btn" id="change-identity-btn">No soy yo, cambiar</button></div>' +
+      (myTasks.length === 0 ? '<p class="empty">No tienes tareas pendientes.</p>' :
+        '<div class="board-col-body">' + myTasks.map(taskCardHTML).join("") + '</div>')
+    );
+  }
+  function bindMisPendientesEvents() {
+    document.querySelectorAll("[data-pick-identity]").forEach(function(btn){
+      btn.addEventListener("click", function(){
+        setMyIdentity(btn.dataset.pickIdentity);
+        renderTabContent();
+      });
+    });
+    var changeBtn = document.getElementById("change-identity-btn");
+    if (changeBtn) changeBtn.addEventListener("click", function(){
+      clearMyIdentity();
+      renderTabContent();
+    });
+  }
+
   // ---------- Gastos ----------
   function gastosHTML() {
     var monthFilter = state.gastosMonthFilter;
     var filtered = state.expenses.filter(function(e){ return !monthFilter || (e.date && e.date.slice(0,7) === monthFilter); });
-    var total = filtered.reduce(function(s,e){ return s + Number(e.amount || 0); }, 0);
+    var total = filtered.filter(isFullyConfirmed).reduce(function(s,e){ return s + Number(e.amount || 0); }, 0);
+    var pendingCount = filtered.length - filtered.filter(isFullyConfirmed).length;
     var sorted = filtered.slice().sort(function(a,b){ return b.date.localeCompare(a.date); });
     var categoryOptions = CATEGORIES.map(function(c){ return '<option value="' + escapeHtml(c) + '">' + escapeHtml(c) + '</option>'; }).join("");
     var teamOptions = state.team.map(function(m){ return '<option value="' + m.id + '">' + escapeHtml(m.name) + '</option>'; }).join("");
@@ -421,15 +572,17 @@
       '</form>' +
       '<div class="list-header">' +
         '<input type="month" id="month-filter" value="' + monthFilter + '" />' +
-        '<span class="total-chip">Total: ' + currency(total) + '</span>' +
+        '<span class="total-chip">Total confirmado: ' + currency(total) + '</span>' +
+        (pendingCount > 0 ? '<span class="hint" style="margin:0;">' + pendingCount + ' pendiente(s) de confirmar</span>' : '') +
       '</div>' +
       '<div class="card table-wrap">' +
         (sorted.length === 0 ? '<p class="empty">Aún no hay gastos registrados en este periodo.</p>' :
-          '<table><thead><tr><th>Fecha</th><th>Categoría</th><th>Descripción</th><th>Pagó</th><th>Monto</th><th></th></tr></thead><tbody>' +
+          '<table><thead><tr><th>Fecha</th><th>Categoría</th><th>Descripción</th><th>Pagó</th><th>Monto</th><th>Estado</th><th></th></tr></thead><tbody>' +
           sorted.map(function(e){
             return '<tr><td class="mono">' + e.date + '</td><td>' + escapeHtml(e.category) + '</td><td>' +
               (escapeHtml(e.description) || "—") + '</td><td>' + escapeHtml(memberName(e.paidBy)) + '</td>' +
               '<td class="mono amount">' + currency(e.amount) + '</td>' +
+              '<td>' + confirmStampHTML(e) + confirmControlHTML(e, "expenses") + '</td>' +
               '<td><button class="icon-btn" data-delete-expense="' + e.id + '" aria-label="Eliminar gasto">✕</button></td></tr>';
           }).join("") + '</tbody></table>') +
       '</div>'
@@ -456,6 +609,7 @@
     document.querySelectorAll("[data-delete-expense]").forEach(function(btn){
       btn.addEventListener("click", function(){ deleteExpense(btn.dataset.deleteExpense); });
     });
+    bindConfirmEvents();
   }
 
   // ---------- Tareas ----------
@@ -566,18 +720,21 @@
   // ---------- Aportaciones ----------
   function aportacionesHTML() {
     var sorted = state.contributions.slice().sort(function(a,b){ return b.date.localeCompare(a.date); });
-    var total = state.contributions.reduce(function(s,c){ return s + Number(c.amount || 0); }, 0);
+    var confirmed = state.contributions.filter(isFullyConfirmed);
+    var pendingCount = state.contributions.length - confirmed.length;
+    var total = confirmed.reduce(function(s,c){ return s + Number(c.amount || 0); }, 0);
     var byMember = {};
-    state.contributions.forEach(function(c){ byMember[c.memberId] = (byMember[c.memberId] || 0) + Number(c.amount || 0); });
+    confirmed.forEach(function(c){ byMember[c.memberId] = (byMember[c.memberId] || 0) + Number(c.amount || 0); });
     var teamOptions = state.team.map(function(m){ return '<option value="' + m.id + '">' + escapeHtml(m.name) + '</option>'; }).join("");
     var memberCards = state.team.map(function(m){
-      return '<div class="stat-card"><div class="stat-label">' + escapeHtml(m.name) + ' aportó</div><div class="stat-value">' + currency(byMember[m.id] || 0) + '</div></div>';
+      return '<div class="stat-card"><div class="stat-label">' + escapeHtml(m.name) + ' aportó (confirmado)</div><div class="stat-value">' + currency(byMember[m.id] || 0) + '</div></div>';
     }).join("");
 
     return (
       '<h2 class="panel-title">Aportaciones al negocio</h2>' +
+      (pendingCount > 0 ? '<p class="hint">⚠ ' + pendingCount + ' aportación(es) pendiente(s) de confirmar — no cuentan todavía en los totales.</p>' : '') +
       '<div class="stat-grid">' + memberCards +
-        '<div class="stat-card"><div class="stat-label">Total aportado</div><div class="stat-value">' + currency(total) + '</div></div>' +
+        '<div class="stat-card"><div class="stat-label">Total aportado (confirmado)</div><div class="stat-value">' + currency(total) + '</div></div>' +
       '</div>' +
       '<form class="card form-grid" id="contribution-form">' +
         '<label>Monto<input type="number" min="0" step="0.01" name="amount" placeholder="0.00" required /></label>' +
@@ -588,10 +745,11 @@
       '</form>' +
       '<div class="card table-wrap">' +
         (sorted.length === 0 ? '<p class="empty">Todavía no hay aportaciones registradas.</p>' :
-          '<table><thead><tr><th>Fecha</th><th>Quién</th><th>Concepto</th><th>Monto</th><th></th></tr></thead><tbody>' +
+          '<table><thead><tr><th>Fecha</th><th>Quién</th><th>Concepto</th><th>Monto</th><th>Estado</th><th></th></tr></thead><tbody>' +
           sorted.map(function(c){
             return '<tr><td class="mono">' + c.date + '</td><td>' + escapeHtml(memberName(c.memberId)) + '</td><td>' +
               (escapeHtml(c.note) || "—") + '</td><td class="mono amount">' + currency(c.amount) + '</td>' +
+              '<td>' + confirmStampHTML(c) + confirmControlHTML(c, "contributions") + '</td>' +
               '<td><button class="icon-btn" data-delete-contribution="' + c.id + '" aria-label="Eliminar aportación">✕</button></td></tr>';
           }).join("") + '</tbody></table>') +
       '</div>'
@@ -613,18 +771,27 @@
     document.querySelectorAll("[data-delete-contribution]").forEach(function(btn){
       btn.addEventListener("click", function(){ deleteContribution(btn.dataset.deleteContribution); });
     });
+    bindConfirmEvents();
   }
 
   // ---------- Equipo ----------
   function equipoHTML() {
     var rows = state.team.map(function(m){
-      return '<div class="member-row"><input type="text" value="' + escapeHtml(m.name) + '" data-member-id="' + m.id + '" />' +
-        '<button class="icon-btn" data-remove-member="' + m.id + '" ' + (state.team.length <= 1 ? "disabled" : "") + ' aria-label="Eliminar integrante">✕</button></div>';
+      var pinStatus = m.pinHash ? "Clave configurada ✓" : "Sin clave todavía";
+      return (
+        '<div class="member-row"><input type="text" value="' + escapeHtml(m.name) + '" data-member-id="' + m.id + '" />' +
+          '<button class="icon-btn" data-remove-member="' + m.id + '" ' + (state.team.length <= 1 ? "disabled" : "") + ' aria-label="Eliminar integrante">✕</button></div>' +
+        '<div class="member-pin-row">' +
+          '<span class="hint" style="margin:0;">' + pinStatus + '</span>' +
+          '<input type="password" inputmode="numeric" maxlength="4" placeholder="Nueva clave (4 dígitos)" id="pin-input-' + m.id + '" style="max-width:170px;" />' +
+          '<button type="button" class="btn-secondary" style="margin-top:0;" data-set-pin="' + m.id + '">Guardar clave</button>' +
+        '</div>'
+      );
     }).join("");
     return (
       '<h2 class="panel-title">Equipo</h2>' +
       '<div class="card">' +
-        '<p class="hint">Estos nombres se usan para asignar tareas y para registrar quién paga cada gasto. Los datos se comparten entre quienes visiten esta página.</p>' +
+        '<p class="hint">Estos nombres se usan para asignar tareas y para registrar quién paga cada gasto. Los datos se comparten entre quienes visiten esta página. Cada integrante puede poner su propia clave de 4 dígitos — se usa para confirmar gastos y aportaciones, como firma de autorización.</p>' +
         '<div id="member-rows">' + rows + '</div>' +
         '<button type="button" class="btn-secondary" id="add-member-btn">+ Agregar integrante</button>' +
       '</div>'
@@ -645,6 +812,18 @@
       btn.addEventListener("click", function(){
         if (state.team.length <= 1) return;
         saveTeam(state.team.filter(function(m){ return m.id !== btn.dataset.removeMember; }));
+      });
+    });
+    document.querySelectorAll("[data-set-pin]").forEach(function(btn){
+      btn.addEventListener("click", async function(){
+        var id = btn.dataset.setPin;
+        var input = document.getElementById("pin-input-" + id);
+        var pin = input.value.trim();
+        if (!/^\d{4}$/.test(pin)) { flash("La clave debe ser de exactamente 4 dígitos.", true); return; }
+        var hash = await sha256Hex(pin);
+        var next = state.team.map(function(m){ return m.id === id ? Object.assign({}, m, { pinHash: hash }) : m; });
+        await saveTeam(next);
+        flash("Clave guardada.");
       });
     });
     document.getElementById("add-member-btn").addEventListener("click", function(){
