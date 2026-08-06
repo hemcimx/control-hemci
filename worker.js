@@ -1,9 +1,18 @@
+const BASE_PATH = "/control";
+
+function stripBase(pathname) {
+  if (pathname === BASE_PATH) return "/";
+  if (pathname.startsWith(BASE_PATH + "/")) return pathname.slice(BASE_PATH.length);
+  return pathname;
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
+    const innerPath = stripBase(url.pathname);
 
-    if (url.pathname.startsWith("/api/data/")) {
-      const key = url.pathname.replace("/api/data/", "");
+    if (innerPath.startsWith("/api/data/")) {
+      const key = innerPath.replace("/api/data/", "");
 
       if (!key) {
         return new Response(JSON.stringify({ error: "Falta la llave" }), {
@@ -44,7 +53,11 @@ export default {
       return new Response("Método no permitido", { status: 405 });
     }
 
-    // Todo lo demás (index.html, etc.) lo sirve el sitio estático
-    return env.ASSETS.fetch(request);
+    // Todo lo demás (index.html, etc.) lo sirve el sitio estático,
+    // reescribiendo la URL para quitar el prefijo /control antes de buscar el archivo.
+    const assetUrl = new URL(request.url);
+    assetUrl.pathname = innerPath;
+    const assetRequest = new Request(assetUrl.toString(), request);
+    return env.ASSETS.fetch(assetRequest);
   }
 };
