@@ -93,7 +93,7 @@
   .toast-error { background: var(--stamp-red); }
   .member-row { display: flex; gap: 8px; margin-bottom: 8px; align-items: center; }
   .hint { font-size: 12px; color: var(--text-muted); margin: 0 0 12px; }
-  .stat-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin-bottom: 18px; }
+  .stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 14px; margin-bottom: 18px; }
   .stat-card { background: rgba(255,255,255,0.55); border: 1px solid var(--paper-line); border-radius: 10px; padding: 14px 16px; }
   .stat-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); }
   .stat-value { font-family: var(--font-mono); font-size: 26px; font-weight: 700; margin-top: 4px; }
@@ -137,6 +137,7 @@
     team: [],
     expenses: [],
     tasks: [],
+    contributions: [],
     settings: { companyName: "Nuestro Negocio" },
     loading: true,
     notice: null,
@@ -187,9 +188,10 @@
       loadKey("team", null),
       loadKey("expenses", []),
       loadKey("tasks", []),
-      loadKey("settings", { companyName: "Nuestro Negocio" })
+      loadKey("settings", { companyName: "Nuestro Negocio" }),
+      loadKey("contributions", [])
     ]);
-    var team = results[0], expenses = results[1], tasks = results[2], settings = results[3];
+    var team = results[0], expenses = results[1], tasks = results[2], settings = results[3], contributions = results[4];
     if (!team || team.length === 0) {
       team = [{ id: uid(), name: "Socio 1" }, { id: uid(), name: "Socio 2" }];
       await saveKey("team", team);
@@ -197,6 +199,7 @@
     state.team = team;
     state.expenses = expenses;
     state.tasks = tasks;
+    state.contributions = contributions;
     state.settings = settings;
     state.loading = false;
     render();
@@ -237,6 +240,18 @@
     await saveKey("tasks", state.tasks);
     renderTabContent();
   }
+  async function addContribution(c) {
+    var item = Object.assign({}, c, { id: uid(), createdAt: Date.now() });
+    state.contributions = [item].concat(state.contributions);
+    var ok = await saveKey("contributions", state.contributions);
+    flash(ok ? "Aportación registrada." : "No se pudo guardar la aportación.", !ok);
+    renderTabContent();
+  }
+  async function deleteContribution(id) {
+    state.contributions = state.contributions.filter(function(x){ return x.id !== id; });
+    await saveKey("contributions", state.contributions);
+    renderTabContent();
+  }
   async function saveTeam(next) {
     state.team = next;
     var ok = await saveKey("team", next);
@@ -267,6 +282,7 @@
           '<nav class="tabs">' +
             tabButton("resumen", "Resumen") +
             tabButton("gastos", "Gastos") +
+            tabButton("aportaciones", "Aportaciones") +
             tabButton("tareas", "Tareas") +
             tabButton("equipo", "Equipo") +
           '</nav>' +
@@ -317,12 +333,14 @@
   function tabContentHTML() {
     if (state.tab === "resumen") return resumenHTML();
     if (state.tab === "gastos") return gastosHTML();
+    if (state.tab === "aportaciones") return aportacionesHTML();
     if (state.tab === "tareas") return tareasHTML();
     if (state.tab === "equipo") return equipoHTML();
     return "";
   }
   function bindTabEvents() {
     if (state.tab === "gastos") bindGastosEvents();
+    if (state.tab === "aportaciones") bindAportacionesEvents();
     if (state.tab === "tareas") bindTareasEvents();
     if (state.tab === "equipo") bindEquipoEvents();
   }
@@ -339,6 +357,9 @@
     var active = state.tasks.filter(function(t){ return t.status !== "cancelada"; });
     var pendientes = state.tasks.filter(function(t){ return t.status === "pendiente"; }).length;
     var avgProgress = active.length ? Math.round(active.reduce(function(s,t){ return s + Number(t.progress || 0); }, 0) / active.length) : 0;
+    var totalAportado = state.contributions.reduce(function(s,c){ return s + Number(c.amount || 0); }, 0);
+    var totalGastadoTodo = state.expenses.reduce(function(s,e){ return s + Number(e.amount || 0); }, 0);
+    var disponible = totalAportado - totalGastadoTodo;
     var upcoming = state.tasks.filter(function(t){ return t.dueDate && t.status !== "hecho" && t.status !== "cancelada"; })
       .sort(function(a,b){ return a.dueDate.localeCompare(b.dueDate); }).slice(0,5);
     var feed = state.expenses.map(function(e){ return { ts: e.createdAt || 0, text: "Gasto de " + currency(e.amount) + " en " + escapeHtml(e.category) }; })
@@ -351,6 +372,7 @@
         '<div class="stat-card"><div class="stat-label">Gastado este mes</div><div class="stat-value">' + currency(monthTotal) + '</div></div>' +
         '<div class="stat-card"><div class="stat-label">Tareas pendientes</div><div class="stat-value">' + pendientes + '</div></div>' +
         '<div class="stat-card"><div class="stat-label">Avance general</div><div class="stat-value">' + avgProgress + '%</div></div>' +
+        '<div class="stat-card"><div class="stat-label">Capital disponible</div><div class="stat-value">' + currency(disponible) + '</div></div>' +
       '</div>' +
       '<div class="two-col">' +
         '<div class="card"><h3 class="card-title">Gastos por categoría</h3>' +
@@ -536,6 +558,58 @@
     });
     document.querySelectorAll("[data-delete-task]").forEach(function(btn){
       btn.addEventListener("click", function(){ deleteTask(btn.dataset.deleteTask); });
+    });
+  }
+
+  // ---------- Aportaciones ----------
+  function aportacionesHTML() {
+    var sorted = state.contributions.slice().sort(function(a,b){ return b.date.localeCompare(a.date); });
+    var total = state.contributions.reduce(function(s,c){ return s + Number(c.amount || 0); }, 0);
+    var byMember = {};
+    state.contributions.forEach(function(c){ byMember[c.memberId] = (byMember[c.memberId] || 0) + Number(c.amount || 0); });
+    var teamOptions = state.team.map(function(m){ return '<option value="' + m.id + '">' + escapeHtml(m.name) + '</option>'; }).join("");
+    var memberCards = state.team.map(function(m){
+      return '<div class="stat-card"><div class="stat-label">' + escapeHtml(m.name) + ' aportó</div><div class="stat-value">' + currency(byMember[m.id] || 0) + '</div></div>';
+    }).join("");
+
+    return (
+      '<h2 class="panel-title">Aportaciones al negocio</h2>' +
+      '<div class="stat-grid">' + memberCards +
+        '<div class="stat-card"><div class="stat-label">Total aportado</div><div class="stat-value">' + currency(total) + '</div></div>' +
+      '</div>' +
+      '<form class="card form-grid" id="contribution-form">' +
+        '<label>Monto<input type="number" min="0" step="0.01" name="amount" placeholder="0.00" required /></label>' +
+        '<label>Quién aporta<select name="memberId">' + teamOptions + '</select></label>' +
+        '<label>Fecha<input type="date" name="date" value="' + todayISO() + '" /></label>' +
+        '<label class="span-2">Concepto<input type="text" name="note" placeholder="Ej. Capital inicial, compra de equipo" /></label>' +
+        '<button type="submit" class="btn-primary">+ Registrar aportación</button>' +
+      '</form>' +
+      '<div class="card table-wrap">' +
+        (sorted.length === 0 ? '<p class="empty">Todavía no hay aportaciones registradas.</p>' :
+          '<table><thead><tr><th>Fecha</th><th>Quién</th><th>Concepto</th><th>Monto</th><th></th></tr></thead><tbody>' +
+          sorted.map(function(c){
+            return '<tr><td class="mono">' + c.date + '</td><td>' + escapeHtml(memberName(c.memberId)) + '</td><td>' +
+              (escapeHtml(c.note) || "—") + '</td><td class="mono amount">' + currency(c.amount) + '</td>' +
+              '<td><button class="icon-btn" data-delete-contribution="' + c.id + '" aria-label="Eliminar aportación">✕</button></td></tr>';
+          }).join("") + '</tbody></table>') +
+      '</div>'
+    );
+  }
+  function bindAportacionesEvents() {
+    document.getElementById("contribution-form").addEventListener("submit", function(e){
+      e.preventDefault();
+      var fd = new FormData(e.target);
+      var amount = Number(fd.get("amount"));
+      if (!amount || amount <= 0) return;
+      addContribution({
+        amount: amount,
+        memberId: fd.get("memberId"),
+        date: fd.get("date") || todayISO(),
+        note: (fd.get("note") || "").trim()
+      });
+    });
+    document.querySelectorAll("[data-delete-contribution]").forEach(function(btn){
+      btn.addEventListener("click", function(){ deleteContribution(btn.dataset.deleteContribution); });
     });
   }
 
