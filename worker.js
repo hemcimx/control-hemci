@@ -1,4 +1,4 @@
-const BASE_PATH = "/control";
+const BASE_PATH = "/betoalex";
 
 function stripBase(pathname) {
   if (pathname === BASE_PATH) return "/";
