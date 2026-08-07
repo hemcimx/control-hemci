@@ -153,6 +153,15 @@ async function requireReportAccess(request, env) {
   return !!(payload && payload.scope === "report");
 }
 
+async function nextTicketFolio(env) {
+  var counterRaw = await env.HEMCI_KV.get("ticket_counter");
+  var counter = counterRaw ? parseInt(counterRaw, 10) : 0;
+  counter += 1;
+  await env.HEMCI_KV.put("ticket_counter", String(counter));
+  var year = new Intl.DateTimeFormat("en-US", { timeZone: "America/Mexico_City", year: "numeric" }).format(new Date());
+  return "HEMCI-" + year + "-" + String(counter).padStart(4, "0");
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -199,7 +208,7 @@ export default {
           id: uidServer(), title: title,
           description: "Reportado por " + reporterName + (detail ? (": " + detail) : ""),
           project: "Solicitud externa",
-          assignee: String(body.assignee || "").trim(),
+          assignee: "",
           priority: "media", dueDate: String(body.dueDate || "").trim().slice(0, 10),
           status: "pendiente", progress: 0, createdAt: Date.now(), updatedAt: Date.now()
         };
@@ -213,15 +222,16 @@ export default {
         if (!device || !desc) return jsonError("Faltan datos del reporte.", 400);
         var ticketsRaw = await env.HEMCI_KV.get("tickets");
         var tickets = ticketsRaw ? JSON.parse(ticketsRaw) : [];
+        var folio = await nextTicketFolio(env);
         var t = {
-          id: uidServer(), reporterName: reporterName, device: device,
+          id: uidServer(), folio: folio, reporterName: reporterName, device: device,
           failureType: String(body.failureType || "Otro").slice(0, 50),
           urgency: String(body.urgency || "Media").slice(0, 20),
-          description: desc, status: "abierto", resolution: "", createdAt: Date.now()
+          description: desc, status: "abierto", resolution: "", assignedTo: "", createdAt: Date.now()
         };
         tickets = [t].concat(tickets);
         await env.HEMCI_KV.put("tickets", JSON.stringify(tickets));
-        return jsonResponse({ ok: true });
+        return jsonResponse({ ok: true, folio: folio });
       }
       return jsonError("Tipo de reporte inválido.", 400);
     }
