@@ -1283,12 +1283,48 @@
   async function initReportForm() {
     var app = document.getElementById("app");
     app.innerHTML = '<div class="loading-wrap"><div class="spinner"></div><p>Cargando…</p></div>';
+    var hasAccess = false;
+    try {
+      var chk = await fetch(PUBLIC_BASE + "report-check", { credentials: "same-origin" });
+      var chkData = await chk.json();
+      hasAccess = !!chkData.access;
+    } catch (e) {}
+    if (!hasAccess) { renderReportGate(); return; }
     var team = [];
     try {
       var res = await fetch(PUBLIC_BASE + "team-names");
       if (res.ok) team = await res.json();
     } catch (e) {}
     renderReportForm(team);
+  }
+  function renderReportGate(errorMsg) {
+    var app = document.getElementById("app");
+    app.innerHTML =
+      '<div class="report-page"><div class="report-card">' +
+        '<span class="brand-mark" style="font-size:32px;">§</span>' +
+        '<h1 class="panel-title">Acceso a reportes</h1>' +
+        '<p class="hint">Usa el usuario y contraseña que te compartieron.</p>' +
+        (errorMsg ? '<div class="toast toast-error" style="position:static; display:flex; margin-bottom:14px;">' + escapeHtml(errorMsg) + '</div>' : '') +
+        '<form id="report-gate-form">' +
+          '<label>Usuario<input type="text" name="username" required autocomplete="username" /></label>' +
+          '<label>Contraseña<input type="password" name="password" required autocomplete="current-password" /></label>' +
+          '<button type="submit" class="btn-primary" style="width:100%;">Entrar</button>' +
+        '</form>' +
+      '</div></div>';
+    document.getElementById("report-gate-form").addEventListener("submit", async function(e){
+      e.preventDefault();
+      var fd = new FormData(e.target);
+      try {
+        var res = await fetch(PUBLIC_BASE + "report-login", {
+          method: "POST", credentials: "same-origin",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ username: fd.get("username"), password: fd.get("password") })
+        });
+        var data = await res.json().catch(function(){ return {}; });
+        if (res.ok && data.ok) { initReportForm(); }
+        else { renderReportGate(data.error || "No se pudo entrar."); }
+      } catch (err) { renderReportGate("No se pudo conectar. Revisa tu conexión."); }
+    });
   }
   function renderReportForm(team, successMsg) {
     var app = document.getElementById("app");
@@ -1351,6 +1387,7 @@
       try {
         var res = await fetch(PUBLIC_BASE + "report", {
           method: "POST",
+          credentials: "same-origin",
           headers: { "content-type": "application/json" },
           body: JSON.stringify(payload)
         });
