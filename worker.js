@@ -140,14 +140,16 @@ export default {
     const url = new URL(request.url);
     const innerPath = stripBase(url.pathname);
 
-    // ---- Acceso genérico compartido para /reportar ----
+    // ---- Acceso genérico compartido para /reportar (credenciales guardadas en KV) ----
     if (innerPath === "/api/public/report-login" && request.method === "POST") {
-      if (!env.SESSION_SECRET) return jsonError("Servidor sin configurar.", 500);
-      if (!env.REPORT_USERNAME || !env.REPORT_PASSWORD) return jsonError("El acceso a reportes no está configurado todavía.", 500);
+      if (!env.SESSION_SECRET || !env.HEMCI_KV) return jsonError("Servidor sin configurar.", 500);
+      var credsRaw = await env.HEMCI_KV.get("report_access_creds");
+      var creds = credsRaw ? JSON.parse(credsRaw) : null;
+      if (!creds || !creds.username || !creds.passwordHash) return jsonError("El acceso a reportes no está configurado todavía. Pídele a un socio que lo configure en Equipo.", 500);
       var rlBody; try { rlBody = await request.json(); } catch (e) { return jsonError("Solicitud inválida.", 400); }
-      var ru = String(rlBody.username || "");
+      var ru = String(rlBody.username || "").trim().toLowerCase();
       var rp = String(rlBody.password || "");
-      if (!timingSafeEqual(ru, env.REPORT_USERNAME) || !timingSafeEqual(rp, env.REPORT_PASSWORD)) {
+      if (!timingSafeEqual(ru, creds.username) || !(await verifyPassword(rp, creds.passwordHash))) {
         return jsonError("Usuario o contraseña incorrectos.", 401);
       }
       var rexp = Date.now() + 90 * 24 * 60 * 60 * 1000;
@@ -286,6 +288,28 @@ export default {
       team3[idx3] = updated;
       await env.HEMCI_KV.put("team", JSON.stringify(team3));
       return jsonResponse({ ok: true });
+    }
+
+    if (innerPath === "/api/auth/set-report-access" && request.method === "POST") {
+      var session4 = await requireSession(request, env);
+      if (!session4) return jsonError("No autenticado.", 401);
+      if (!env.HEMCI_KV) return jsonError("KV no configurado.", 500);
+      var raBody; try { raBody = await request.json(); } catch (e) { return jsonError("Solicitud inválida.", 400); }
+      var raUsername = String(raBody.username || "").trim().toLowerCase();
+      var raPassword = String(raBody.password || "");
+      if (!raUsername) return jsonError("Falta el usuario.", 400);
+      if (!isStrongPassword(raPassword)) return jsonError(PASSWORD_RULE_MSG, 400);
+      var raCreds = { username: raUsername, passwordHash: await hashPasswordNew(raPassword) };
+      await env.HEMCI_KV.put("report_access_creds", JSON.stringify(raCreds));
+      return jsonResponse({ ok: true });
+    }
+    if (innerPath === "/api/auth/report-access-status" && request.method === "GET") {
+      var session5 = await requireSession(request, env);
+      if (!session5) return jsonError("No autenticado.", 401);
+      if (!env.HEMCI_KV) return jsonError("KV no configurado.", 500);
+      var raRaw = await env.HEMCI_KV.get("report_access_creds");
+      var raCurrent = raRaw ? JSON.parse(raRaw) : null;
+      return jsonResponse({ configured: !!(raCurrent && raCurrent.username), username: raCurrent ? raCurrent.username : null });
     }
 
     // ---- API general de datos: ahora requiere sesión válida ----
