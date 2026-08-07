@@ -125,6 +125,13 @@ function timingSafeEqual(a, b) {
   for (var i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
   return diff === 0;
 }
+var MESES_ES = ["Enero","Febrero","Marzo","Abril","Mayo","Junio","Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"];
+function currentMonthPassword() {
+  var parts = new Intl.DateTimeFormat("en-US", { timeZone: "America/Mexico_City", month: "numeric", year: "numeric" }).formatToParts(new Date());
+  var month = parseInt(parts.find(function(p){ return p.type === "month"; }).value, 10);
+  var year = parts.find(function(p){ return p.type === "year"; }).value;
+  return MESES_ES[month - 1] + year;
+}
 async function requireReportAccess(request, env) {
   // Acceso válido si tiene sesión de socio (login normal) O el acceso genérico de /reportar.
   var adminSession = await requireSession(request, env);
@@ -140,16 +147,16 @@ export default {
     const url = new URL(request.url);
     const innerPath = stripBase(url.pathname);
 
-    // ---- Acceso genérico compartido para /reportar (credenciales guardadas en KV) ----
+    // ---- Acceso genérico compartido para /reportar (usuario guardado + contraseña del mes) ----
     if (innerPath === "/api/public/report-login" && request.method === "POST") {
       if (!env.SESSION_SECRET || !env.HEMCI_KV) return jsonError("Servidor sin configurar.", 500);
       var credsRaw = await env.HEMCI_KV.get("report_access_creds");
       var creds = credsRaw ? JSON.parse(credsRaw) : null;
-      if (!creds || !creds.username || !creds.passwordHash) return jsonError("El acceso a reportes no está configurado todavía. Pídele a un socio que lo configure en Equipo.", 500);
+      var expectedUsername = (creds && creds.username) ? creds.username : "hemci";
       var rlBody; try { rlBody = await request.json(); } catch (e) { return jsonError("Solicitud inválida.", 400); }
       var ru = String(rlBody.username || "").trim().toLowerCase();
-      var rp = String(rlBody.password || "");
-      if (!timingSafeEqual(ru, creds.username) || !(await verifyPassword(rp, creds.passwordHash))) {
+      var rp = String(rlBody.password || "").trim();
+      if (!timingSafeEqual(ru, expectedUsername) || !timingSafeEqual(rp, currentMonthPassword())) {
         return jsonError("Usuario o contraseña incorrectos.", 401);
       }
       var rexp = Date.now() + 90 * 24 * 60 * 60 * 1000;
@@ -296,11 +303,8 @@ export default {
       if (!env.HEMCI_KV) return jsonError("KV no configurado.", 500);
       var raBody; try { raBody = await request.json(); } catch (e) { return jsonError("Solicitud inválida.", 400); }
       var raUsername = String(raBody.username || "").trim().toLowerCase();
-      var raPassword = String(raBody.password || "");
       if (!raUsername) return jsonError("Falta el usuario.", 400);
-      if (!isStrongPassword(raPassword)) return jsonError(PASSWORD_RULE_MSG, 400);
-      var raCreds = { username: raUsername, passwordHash: await hashPasswordNew(raPassword) };
-      await env.HEMCI_KV.put("report_access_creds", JSON.stringify(raCreds));
+      await env.HEMCI_KV.put("report_access_creds", JSON.stringify({ username: raUsername }));
       return jsonResponse({ ok: true });
     }
     if (innerPath === "/api/auth/report-access-status" && request.method === "GET") {
@@ -309,7 +313,7 @@ export default {
       if (!env.HEMCI_KV) return jsonError("KV no configurado.", 500);
       var raRaw = await env.HEMCI_KV.get("report_access_creds");
       var raCurrent = raRaw ? JSON.parse(raRaw) : null;
-      return jsonResponse({ configured: !!(raCurrent && raCurrent.username), username: raCurrent ? raCurrent.username : null });
+      return jsonResponse({ username: (raCurrent && raCurrent.username) ? raCurrent.username : "hemci", currentPassword: currentMonthPassword() });
     }
 
     // ---- API general de datos: ahora requiere sesión válida ----
