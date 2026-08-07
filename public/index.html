@@ -348,9 +348,18 @@
     });
   }
 
+  async function loadTeamStrict() {
+    try {
+      var res = await fetch(API_BASE + "team");
+      if (!res.ok) return { failed: true, value: null };
+      var val = await res.json();
+      return { failed: false, value: val };
+    } catch (e) { return { failed: true, value: null }; }
+  }
+
   async function init() {
+    var teamResult = await loadTeamStrict();
     var results = await Promise.all([
-      loadKey("team", null),
       loadKey("expenses", []),
       loadKey("tasks", []),
       loadKey("settings", { companyName: "Nuestro Negocio" }),
@@ -358,8 +367,15 @@
       loadKey("budgets", {}),
       loadKey("auditlog", [])
     ]);
-    var team = results[0], expenses = results[1], tasks = results[2], settings = results[3], contributions = results[4], budgets = results[5], auditLog = results[6];
-    if (!team || team.length === 0) {
+    var expenses = results[0], tasks = results[1], settings = results[2], contributions = results[3], budgets = results[4], auditLog = results[5];
+    var team = teamResult.value;
+    if (teamResult.failed) {
+      // No se pudo confirmar si hay equipo guardado (falla de red/servidor).
+      // NUNCA sobrescribir en este caso — solo mostrar lo que haya en memoria y avisar.
+      team = team || [];
+      state.loadError = true;
+    } else if (!team || team.length === 0) {
+      // Confirmado: de verdad no hay equipo guardado todavía (primera vez). Seguro sembrar.
       team = [{ id: uid(), name: "Socio 1" }, { id: uid(), name: "Socio 2" }];
       await saveKey("team", team);
     }
@@ -372,6 +388,9 @@
     state.auditLog = auditLog || [];
     state.loading = false;
     render();
+    if (state.loadError) {
+      flash("No se pudo confirmar el equipo guardado (problema de conexión). No se sobrescribió nada — recarga la página antes de hacer cambios.", true);
+    }
   }
 
   function flash(msg, isError) {
