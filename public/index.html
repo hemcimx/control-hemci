@@ -97,11 +97,13 @@
   .stat-card { background: rgba(255,255,255,0.55); border: 1px solid var(--paper-line); border-radius: 10px; padding: 14px 16px; }
   .stat-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); }
   .stat-value { font-family: var(--font-mono); font-size: 26px; font-weight: 700; margin-top: 4px; }
-  .cat-bar-row { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; font-size: 12px; }
-  .cat-bar-track { flex: 1; height: 8px; background: var(--paper-dark); border-radius: 4px; overflow: hidden; }
+  .cat-bar-row { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; font-size: 12px; flex-wrap: wrap; }
+  .cat-bar-track { flex: 1; height: 8px; background: var(--paper-dark); border-radius: 4px; overflow: hidden; min-width: 60px; }
   .cat-bar-fill { height: 100%; background: var(--brass); }
+  .cat-bar-fill-warn { background: var(--stamp-amber); }
+  .cat-bar-fill-over { background: var(--stamp-red); }
   .cat-bar-label { width: 130px; flex-shrink: 0; }
-  .cat-bar-value { width: 80px; text-align: right; }
+  .cat-bar-value { min-width: 80px; text-align: right; }
   .feed-item { font-size: 13px; padding: 8px 0; border-bottom: 1px dashed var(--paper-line); }
   .feed-item:last-child { border-bottom: none; }
   .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
@@ -124,7 +126,7 @@
     .two-col { grid-template-columns: 1fr; }
     .content { overflow-x: hidden; padding: 16px; }
     .cat-bar-label { width: 90px; font-size: 11px; }
-    .cat-bar-value { width: 64px; font-size: 11px; }
+    .cat-bar-value { min-width: 64px; font-size: 11px; }
     table, table thead, table tbody, table th, table td, table tr { display: block; width: 100%; }
     table thead { position: absolute; left: -9999px; top: -9999px; }
     table tr { border: 1px solid var(--paper-line); border-radius: 8px; padding: 8px 10px; margin-bottom: 10px; background: #fff; }
@@ -161,6 +163,8 @@
     tasks: [],
     contributions: [],
     settings: { companyName: "Nuestro Negocio" },
+    budgets: {},
+    auditLog: [],
     loading: true,
     notice: null,
     gastosMonthFilter: new Date().toISOString().slice(0,7),
@@ -239,6 +243,7 @@
     var hash = await sha256Hex(pin);
     if (hash !== member.pinHash) return { ok: false, error: "Clave incorrecta." };
     var list = kind === "expenses" ? state.expenses : state.contributions;
+    var target = list.find(function(item){ return item.id === id; });
     var next = list.map(function(item){
       if (item.id !== id) return item;
       var confirmedBy = item.confirmedBy || [];
@@ -248,6 +253,7 @@
     if (kind === "expenses") { state.expenses = next; await saveKey("expenses", next); }
     else { state.contributions = next; await saveKey("contributions", next); }
     flash("Confirmado.");
+    if (target) logActivity(member.name + " confirmó " + (kind === "expenses" ? "un gasto" : "una aportación") + " de " + currency(target.amount));
     renderTabContent();
     return { ok: true };
   }
@@ -296,15 +302,64 @@
     } catch (e) { return false; }
   }
 
+  function logActivity(text) {
+    var actorId = getMyIdentity();
+    var actor = actorId ? memberName(actorId) : "Alguien";
+    var entry = { ts: Date.now(), actor: actor, text: text };
+    state.auditLog = [entry].concat(state.auditLog).slice(0, 200);
+    saveKey("auditlog", state.auditLog);
+  }
+
+  function downloadCSV(filename, rows) {
+    var csv = rows.map(function(row){
+      return row.map(function(cell){
+        var s = String(cell == null ? "" : cell);
+        if (/[",\n]/.test(s)) s = '"' + s.replace(/"/g, '""') + '"';
+        return s;
+      }).join(",");
+    }).join("\r\n");
+    var blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8;" });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement("a");
+    a.href = url; a.download = filename;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    setTimeout(function(){ URL.revokeObjectURL(url); }, 1000);
+  }
+
+  function readAndCompressImage(file, maxDim, quality) {
+    return new Promise(function(resolve, reject){
+      var reader = new FileReader();
+      reader.onerror = function(){ reject(new Error("No se pudo leer la imagen.")); };
+      reader.onload = function(){
+        var img = new Image();
+        img.onload = function(){
+          var w = img.width, h = img.height;
+          var scale = Math.min(1, maxDim / Math.max(w, h));
+          var cw = Math.max(1, Math.round(w * scale)), ch = Math.max(1, Math.round(h * scale));
+          var canvas = document.createElement("canvas");
+          canvas.width = cw; canvas.height = ch;
+          var ctx = canvas.getContext("2d");
+          ctx.drawImage(img, 0, 0, cw, ch);
+          resolve(canvas.toDataURL("image/jpeg", quality));
+        };
+        img.onerror = function(){ reject(new Error("Imagen inválida.")); };
+        img.src = reader.result;
+      };
+      reader.readAsDataURL(file);
+    });
+  }
+
   async function init() {
     var results = await Promise.all([
       loadKey("team", null),
       loadKey("expenses", []),
       loadKey("tasks", []),
       loadKey("settings", { companyName: "Nuestro Negocio" }),
-      loadKey("contributions", [])
+      loadKey("contributions", []),
+      loadKey("budgets", {}),
+      loadKey("auditlog", [])
     ]);
-    var team = results[0], expenses = results[1], tasks = results[2], settings = results[3], contributions = results[4];
+    var team = results[0], expenses = results[1], tasks = results[2], settings = results[3], contributions = results[4], budgets = results[5], auditLog = results[6];
     if (!team || team.length === 0) {
       team = [{ id: uid(), name: "Socio 1" }, { id: uid(), name: "Socio 2" }];
       await saveKey("team", team);
@@ -314,6 +369,8 @@
     state.tasks = tasks;
     state.contributions = contributions;
     state.settings = settings;
+    state.budgets = budgets || {};
+    state.auditLog = auditLog || [];
     state.loading = false;
     render();
   }
@@ -324,16 +381,21 @@
     setTimeout(function(){ state.notice = null; renderNotice(); }, 3000);
   }
 
-  async function addExpense(exp) {
-    var item = Object.assign({}, exp, { id: uid(), createdAt: Date.now(), confirmedBy: [] });
+  async function addExpense(exp, photoDataUrl) {
+    var id = uid();
+    var item = Object.assign({}, exp, { id: id, createdAt: Date.now(), confirmedBy: [], hasReceipt: !!photoDataUrl });
     state.expenses = [item].concat(state.expenses);
     var ok = await saveKey("expenses", state.expenses);
+    if (photoDataUrl) await saveKey("receipt:" + id, photoDataUrl);
     flash(ok ? "Gasto registrado." : "No se pudo guardar el gasto.", !ok);
+    logActivity("Gasto de " + currency(item.amount) + " en " + item.category + " registrado" + (photoDataUrl ? " (con recibo)" : ""));
     renderTabContent();
   }
   async function deleteExpense(id) {
+    var removed = state.expenses.find(function(x){ return x.id === id; });
     state.expenses = state.expenses.filter(function(x){ return x.id !== id; });
     await saveKey("expenses", state.expenses);
+    if (removed) logActivity("Gasto eliminado: " + currency(removed.amount) + " (" + removed.category + ")");
     renderTabContent();
   }
   async function addTask(task) {
@@ -341,16 +403,24 @@
     state.tasks = [item].concat(state.tasks);
     var ok = await saveKey("tasks", state.tasks);
     flash(ok ? "Tarea creada." : "No se pudo guardar la tarea.", !ok);
+    logActivity('Tarea creada: "' + item.title + '" (asignada a ' + memberName(item.assignee) + ")");
     renderTabContent();
   }
   async function updateTask(id, patch) {
+    var before = state.tasks.find(function(t){ return t.id === id; });
     state.tasks = state.tasks.map(function(t){ return t.id === id ? Object.assign({}, t, patch, { updatedAt: Date.now() }) : t; });
     await saveKey("tasks", state.tasks);
+    if (before && patch.status && patch.status !== before.status) {
+      var verb = patch.status === "hecho" ? "marcada como hecha" : patch.status === "cancelada" ? "cancelada" : patch.status === "pendiente" ? "reactivada" : "actualizada";
+      logActivity('Tarea "' + before.title + '" ' + verb);
+    }
     renderTabContent();
   }
   async function deleteTask(id) {
+    var removed = state.tasks.find(function(t){ return t.id === id; });
     state.tasks = state.tasks.filter(function(t){ return t.id !== id; });
     await saveKey("tasks", state.tasks);
+    if (removed) logActivity('Tarea eliminada: "' + removed.title + '"');
     renderTabContent();
   }
   async function addContribution(c) {
@@ -358,11 +428,14 @@
     state.contributions = [item].concat(state.contributions);
     var ok = await saveKey("contributions", state.contributions);
     flash(ok ? "Aportación registrada." : "No se pudo guardar la aportación.", !ok);
+    logActivity("Aportación de " + currency(item.amount) + " registrada (" + memberName(item.memberId) + ")");
     renderTabContent();
   }
   async function deleteContribution(id) {
+    var removed = state.contributions.find(function(x){ return x.id === id; });
     state.contributions = state.contributions.filter(function(x){ return x.id !== id; });
     await saveKey("contributions", state.contributions);
+    if (removed) logActivity("Aportación eliminada: " + currency(removed.amount));
     renderTabContent();
   }
   async function saveTeam(next) {
@@ -399,6 +472,7 @@
             tabButton("aportaciones", "Aportaciones") +
             tabButton("tareas", "Tareas") +
             tabButton("equipo", "Equipo") +
+            tabButton("historial", "Historial") +
           '</nav>' +
         '</aside>' +
         '<main class="content">' +
@@ -451,6 +525,7 @@
     if (state.tab === "aportaciones") return aportacionesHTML();
     if (state.tab === "tareas") return tareasHTML();
     if (state.tab === "equipo") return equipoHTML();
+    if (state.tab === "historial") return historialHTML();
     return "";
   }
   function bindTabEvents() {
@@ -501,9 +576,12 @@
           (topCategories.length === 0 ? '<p class="empty">Sin gastos este mes.</p>' :
             topCategories.map(function(entry){
               var cat = entry[0], val = entry[1];
+              var budget = state.budgets[cat];
+              var fillClass = "";
+              if (budget) fillClass = val > budget ? " cat-bar-fill-over" : (val / budget >= 0.8 ? " cat-bar-fill-warn" : "");
               return '<div class="cat-bar-row"><span class="cat-bar-label">' + escapeHtml(cat) + '</span>' +
-                '<div class="cat-bar-track"><div class="cat-bar-fill" style="width:' + ((val/maxCat)*100) + '%"></div></div>' +
-                '<span class="cat-bar-value mono">' + currency(val) + '</span></div>';
+                '<div class="cat-bar-track"><div class="cat-bar-fill' + fillClass + '" style="width:' + ((val/maxCat)*100) + '%"></div></div>' +
+                '<span class="cat-bar-value mono">' + currency(val) + (budget ? ' / ' + currency(budget) : '') + '</span></div>';
             }).join("")) +
         '</div>' +
         '<div class="card"><h3 class="card-title">Próximas fechas límite</h3>' +
@@ -577,6 +655,10 @@
     var sorted = filtered.slice().sort(function(a,b){ return b.date.localeCompare(a.date); });
     var categoryOptions = CATEGORIES.map(function(c){ return '<option value="' + escapeHtml(c) + '">' + escapeHtml(c) + '</option>'; }).join("");
     var teamOptions = state.team.map(function(m){ return '<option value="' + m.id + '">' + escapeHtml(m.name) + '</option>'; }).join("");
+    var budgetInputs = CATEGORIES.map(function(c){
+      var val = state.budgets[c] || "";
+      return '<label>' + escapeHtml(c) + '<input type="number" min="0" step="1" placeholder="Sin límite" value="' + val + '" data-budget-cat="' + escapeHtml(c) + '" /></label>';
+    }).join("");
 
     return (
       '<h2 class="panel-title">Gastos</h2>' +
@@ -586,39 +668,57 @@
         '<label>Pagó<select name="paidBy">' + teamOptions + '</select></label>' +
         '<label>Fecha<input type="date" name="date" value="' + todayISO() + '" /></label>' +
         '<label class="span-2">Descripción<input type="text" name="description" placeholder="Ej. Papelería para oficina" /></label>' +
+        '<label class="span-2">Foto del recibo (opcional)<input type="file" accept="image/*" capture="environment" id="expense-photo-input" /></label>' +
         '<button type="submit" class="btn-primary">+ Registrar gasto</button>' +
       '</form>' +
       '<div class="list-header">' +
         '<input type="month" id="month-filter" value="' + monthFilter + '" />' +
         '<span class="total-chip">Total confirmado: ' + currency(total) + '</span>' +
         (pendingCount > 0 ? '<span class="hint" style="margin:0;">' + pendingCount + ' pendiente(s) de confirmar</span>' : '') +
+        '<button type="button" class="btn-secondary" style="margin-top:0;" id="export-gastos-btn">Exportar CSV</button>' +
       '</div>' +
       '<div class="card table-wrap">' +
         (sorted.length === 0 ? '<p class="empty">Aún no hay gastos registrados en este periodo.</p>' :
-          '<table><thead><tr><th>Fecha</th><th>Categoría</th><th>Descripción</th><th>Pagó</th><th>Monto</th><th>Estado</th><th></th></tr></thead><tbody>' +
+          '<table><thead><tr><th>Fecha</th><th>Categoría</th><th>Descripción</th><th>Pagó</th><th>Monto</th><th>Estado</th><th>Recibo</th><th></th></tr></thead><tbody>' +
           sorted.map(function(e){
             return '<tr><td class="mono" data-label="Fecha">' + e.date + '</td><td data-label="Categoría">' + escapeHtml(e.category) + '</td><td data-label="Descripción">' +
               (escapeHtml(e.description) || "—") + '</td><td data-label="Pagó">' + escapeHtml(memberName(e.paidBy)) + '</td>' +
               '<td class="mono amount" data-label="Monto">' + currency(e.amount) + '</td>' +
               '<td data-label="Estado">' + confirmStampHTML(e) + confirmControlHTML(e, "expenses") + '</td>' +
+              '<td data-label="Recibo">' + (e.hasReceipt ?
+                ('<button type="button" class="link-btn" data-view-receipt="' + e.id + '">Ver recibo</button><div id="receipt-' + e.id + '" style="display:none; margin-top:6px;"></div>') : '—') + '</td>' +
               '<td data-label=""><button class="icon-btn" data-delete-expense="' + e.id + '" aria-label="Eliminar gasto">✕ Eliminar</button></td></tr>';
           }).join("") + '</tbody></table>') +
+      '</div>' +
+      '<div class="card">' +
+        '<h3 class="card-title">Presupuestos mensuales por categoría</h3>' +
+        '<p class="hint">Deja vacío si no quieres poner límite. Se muestran como referencia en el Resumen.</p>' +
+        '<div class="form-grid">' + budgetInputs + '<button type="button" class="btn-primary" id="save-budgets-btn">Guardar presupuestos</button></div>' +
       '</div>'
     );
   }
   function bindGastosEvents() {
-    document.getElementById("expense-form").addEventListener("submit", function(e){
+    document.getElementById("expense-form").addEventListener("submit", async function(e){
       e.preventDefault();
       var fd = new FormData(e.target);
       var amount = Number(fd.get("amount"));
       if (!amount || amount <= 0) return;
+      var fileInput = document.getElementById("expense-photo-input");
+      var photoDataUrl = null;
+      if (fileInput && fileInput.files && fileInput.files[0]) {
+        try {
+          photoDataUrl = await readAndCompressImage(fileInput.files[0], 1200, 0.7);
+        } catch (err) {
+          flash("No se pudo procesar la foto, se guardó el gasto sin ella.", true);
+        }
+      }
       addExpense({
         amount: amount,
         category: fd.get("category"),
         paidBy: fd.get("paidBy"),
         date: fd.get("date") || todayISO(),
         description: (fd.get("description") || "").trim()
-      });
+      }, photoDataUrl);
     });
     document.getElementById("month-filter").addEventListener("change", function(e){
       state.gastosMonthFilter = e.target.value;
@@ -626,6 +726,55 @@
     });
     document.querySelectorAll("[data-delete-expense]").forEach(function(btn){
       btn.addEventListener("click", function(){ deleteExpense(btn.dataset.deleteExpense); });
+    });
+    document.querySelectorAll("[data-view-receipt]").forEach(function(btn){
+      btn.addEventListener("click", async function(){
+        var id = btn.dataset.viewReceipt;
+        var container = document.getElementById("receipt-" + id);
+        if (!container) return;
+        if (container.style.display !== "none") { container.style.display = "none"; return; }
+        if (!container.dataset.loaded) {
+          container.textContent = "Cargando…";
+          container.style.display = "block";
+          var dataUrl = await loadKey("receipt:" + id, null);
+          container.textContent = "";
+          if (dataUrl) {
+            var img = document.createElement("img");
+            img.src = dataUrl;
+            img.style.maxWidth = "220px";
+            img.style.borderRadius = "6px";
+            img.style.border = "1px solid var(--paper-line)";
+            img.style.display = "block";
+            container.appendChild(img);
+            container.dataset.loaded = "1";
+          } else {
+            container.textContent = "No se pudo cargar la foto.";
+          }
+        }
+        container.style.display = "block";
+      });
+    });
+    var exportBtn = document.getElementById("export-gastos-btn");
+    if (exportBtn) exportBtn.addEventListener("click", function(){
+      var monthFilter = state.gastosMonthFilter;
+      var rows = state.expenses.filter(function(e){ return !monthFilter || (e.date && e.date.slice(0,7) === monthFilter); })
+        .slice().sort(function(a,b){ return b.date.localeCompare(a.date); });
+      var out = [["Fecha","Categoría","Descripción","Pagó","Monto","Estado"]];
+      rows.forEach(function(e){
+        out.push([e.date, e.category, e.description || "", memberName(e.paidBy), e.amount, isFullyConfirmed(e) ? "Confirmada" : "Pendiente"]);
+      });
+      downloadCSV("gastos-" + (monthFilter || "todos") + ".csv", out);
+    });
+    var saveBudgetsBtn = document.getElementById("save-budgets-btn");
+    if (saveBudgetsBtn) saveBudgetsBtn.addEventListener("click", async function(){
+      var next = {};
+      document.querySelectorAll("[data-budget-cat]").forEach(function(input){
+        var v = Number(input.value);
+        if (v > 0) next[input.dataset.budgetCat] = v;
+      });
+      state.budgets = next;
+      await saveKey("budgets", next);
+      flash("Presupuestos guardados.");
     });
     bindConfirmEvents();
   }
@@ -671,8 +820,8 @@
     var meta = STATUS_META[t.status] || STATUS_META.pendiente;
     var priorityObj = PRIORITIES.find(function(p){ return p.id === t.priority; });
     var priorityLabel = priorityObj ? priorityObj.label : "";
-    var assignee = state.team.find(function(m){ return m.id === t.assignee; });
-    var lockName = assignee ? assignee.name : "el asignado";
+    var confirmers = state.team.filter(function(m){ return m.id !== t.assignee && m.pinHash; });
+    var confirmerOptions = confirmers.map(function(m){ return '<option value="' + m.id + '">' + escapeHtml(m.name) + '</option>'; }).join("");
     return (
       '<div class="task-card">' +
         '<div class="task-card-top"><span class="stamp stamp-' + t.status + '">' + meta.label + '</span>' +
@@ -691,9 +840,10 @@
           '<button class="link-btn" data-reactivate-task="' + t.id + '">Reactivar</button>') +
         '<button class="icon-btn" data-delete-task="' + t.id + '" aria-label="Eliminar tarea">✕</button></div>' +
         '<div class="task-pin-panel confirm-panel" id="task-pin-panel-' + t.id + '" style="display:none">' +
-          '<span class="hint" style="margin:0;">Clave de ' + escapeHtml(lockName) + ':</span>' +
+          '<span class="hint" style="margin:0;">El otro socio confirma que ya está hecha:</span>' +
+          '<select id="task-pin-member-' + t.id + '">' + confirmerOptions + '</select>' +
           '<input type="password" inputmode="numeric" maxlength="4" placeholder="Clave" id="task-pin-' + t.id + '" style="max-width:90px;" />' +
-          '<button type="button" class="btn-secondary" style="margin-top:0;" data-task-pin-submit="' + t.id + '">Guardar</button>' +
+          '<button type="button" class="btn-secondary" style="margin-top:0;" data-task-pin-submit="' + t.id + '">Confirmar hecho</button>' +
           '<button type="button" class="link-btn" data-task-pin-cancel="' + t.id + '">Cancelar</button>' +
           '<span class="confirm-error" id="task-pin-error-' + t.id + '"></span>' +
         '</div>' +
@@ -703,8 +853,12 @@
   function requestTaskChange(id, change) {
     var task = state.tasks.find(function(t){ return t.id === id; });
     if (!task) return;
-    var assignee = state.team.find(function(m){ return m.id === task.assignee; });
-    if (!assignee || !assignee.pinHash) {
+    if (change.status !== "hecho") {
+      updateTask(id, change);
+      return;
+    }
+    var eligible = state.team.filter(function(m){ return m.id !== task.assignee && m.pinHash; });
+    if (eligible.length === 0) {
       updateTask(id, change);
       return;
     }
@@ -728,10 +882,10 @@
       });
     });
     document.querySelectorAll("[data-cancel-task]").forEach(function(btn){
-      btn.addEventListener("click", function(){ requestTaskChange(btn.dataset.cancelTask, { status: "cancelada" }); });
+      btn.addEventListener("click", function(){ updateTask(btn.dataset.cancelTask, { status: "cancelada" }); });
     });
     document.querySelectorAll("[data-reactivate-task]").forEach(function(btn){
-      btn.addEventListener("click", function(){ requestTaskChange(btn.dataset.reactivateTask, { status: "pendiente", progress: 0 }); });
+      btn.addEventListener("click", function(){ updateTask(btn.dataset.reactivateTask, { status: "pendiente", progress: 0 }); });
     });
     document.querySelectorAll("[data-delete-task]").forEach(function(btn){
       btn.addEventListener("click", function(){ deleteTask(btn.dataset.deleteTask); });
@@ -739,19 +893,23 @@
     document.querySelectorAll("[data-task-pin-submit]").forEach(function(btn){
       btn.addEventListener("click", async function(){
         var id = btn.dataset.taskPinSubmit;
-        var task = state.tasks.find(function(t){ return t.id === id; });
-        var assignee = task ? state.team.find(function(m){ return m.id === task.assignee; }) : null;
+        var memberSel = document.getElementById("task-pin-member-" + id);
         var pinInput = document.getElementById("task-pin-" + id);
         var errorSlot = document.getElementById("task-pin-error-" + id);
         var pin = pinInput.value.trim();
         errorSlot.textContent = "";
-        if (!assignee || !assignee.pinHash) { errorSlot.textContent = "Sin clave configurada."; return; }
+        var confirmer = memberSel ? state.team.find(function(m){ return m.id === memberSel.value; }) : null;
+        if (!confirmer || !confirmer.pinHash) { errorSlot.textContent = "Elige quién confirma."; return; }
         if (!/^\d{4}$/.test(pin)) { errorSlot.textContent = "Clave de 4 dígitos."; return; }
         var hash = await sha256Hex(pin);
-        if (hash !== assignee.pinHash) { errorSlot.textContent = "Clave incorrecta."; return; }
+        if (hash !== confirmer.pinHash) { errorSlot.textContent = "Clave incorrecta."; return; }
         var change = pendingTaskChanges[id];
         delete pendingTaskChanges[id];
-        if (change) updateTask(id, change);
+        if (change) {
+          var task = state.tasks.find(function(t){ return t.id === id; });
+          updateTask(id, change);
+          if (task) logActivity(confirmer.name + ' confirmó que "' + task.title + '" ya está hecha');
+        }
       });
     });
     document.querySelectorAll("[data-task-pin-cancel]").forEach(function(btn){
@@ -820,6 +978,10 @@
         '<label class="span-2">Concepto<input type="text" name="note" placeholder="Ej. Capital inicial, compra de equipo" /></label>' +
         '<button type="submit" class="btn-primary">+ Registrar aportación</button>' +
       '</form>' +
+      '<div class="list-header">' +
+        '<span></span>' +
+        '<button type="button" class="btn-secondary" style="margin-top:0;" id="export-aportaciones-btn">Exportar CSV</button>' +
+      '</div>' +
       '<div class="card table-wrap">' +
         (sorted.length === 0 ? '<p class="empty">Todavía no hay aportaciones registradas.</p>' :
           '<table><thead><tr><th>Fecha</th><th>Quién</th><th>Concepto</th><th>Monto</th><th>Estado</th><th></th></tr></thead><tbody>' +
@@ -848,7 +1010,33 @@
     document.querySelectorAll("[data-delete-contribution]").forEach(function(btn){
       btn.addEventListener("click", function(){ deleteContribution(btn.dataset.deleteContribution); });
     });
+    var exportBtn = document.getElementById("export-aportaciones-btn");
+    if (exportBtn) exportBtn.addEventListener("click", function(){
+      var rows = state.contributions.slice().sort(function(a,b){ return b.date.localeCompare(a.date); });
+      var out = [["Fecha","Quién","Concepto","Monto","Estado"]];
+      rows.forEach(function(c){
+        out.push([c.date, memberName(c.memberId), c.note || "", c.amount, isFullyConfirmed(c) ? "Confirmada" : "Pendiente"]);
+      });
+      downloadCSV("aportaciones.csv", out);
+    });
     bindConfirmEvents();
+  }
+
+  // ---------- Historial ----------
+  function historialHTML() {
+    if (state.auditLog.length === 0) {
+      return '<h2 class="panel-title">Historial</h2><p class="empty">Todavía no hay actividad registrada.</p>';
+    }
+    var rows = state.auditLog.map(function(entry){
+      var d = new Date(entry.ts);
+      var when = d.toLocaleString("es-MX", { dateStyle: "short", timeStyle: "short" });
+      return '<div class="feed-item"><span class="mono" style="color:var(--text-muted);">' + when + '</span> — <strong>' + escapeHtml(entry.actor) + '</strong>: ' + escapeHtml(entry.text) + '</div>';
+    }).join("");
+    return (
+      '<h2 class="panel-title">Historial</h2>' +
+      '<p class="hint">Registro de quién hizo qué. Se guardan los últimos 200 movimientos.</p>' +
+      '<div class="card">' + rows + '</div>'
+    );
   }
 
   // ---------- Equipo ----------
@@ -884,14 +1072,18 @@
         var name = input.value.trim() || "Sin nombre";
         var current = state.team.find(function(m){ return m.id === id; });
         if (current && current.name !== name) {
+          var oldName = current.name;
           saveTeam(state.team.map(function(m){ return m.id === id ? Object.assign({}, m, { name: name }) : m; }));
+          logActivity('"' + oldName + '" cambió su nombre a "' + name + '"');
         }
       });
     });
     document.querySelectorAll("[data-remove-member]").forEach(function(btn){
       btn.addEventListener("click", function(){
         if (state.team.length <= 1) return;
+        var removed = state.team.find(function(m){ return m.id === btn.dataset.removeMember; });
         saveTeam(state.team.filter(function(m){ return m.id !== btn.dataset.removeMember; }));
+        if (removed) logActivity('Integrante eliminado: "' + removed.name + '"');
       });
     });
     document.querySelectorAll("[data-set-pin]").forEach(function(btn){
@@ -912,10 +1104,12 @@
         var next = state.team.map(function(m){ return m.id === id ? Object.assign({}, m, { pinHash: newHash }) : m; });
         await saveTeam(next);
         flash("Clave guardada.");
+        if (member) logActivity(member.name + (member.pinHash ? " cambió su clave" : " configuró su clave"));
       });
     });
     document.getElementById("add-member-btn").addEventListener("click", function(){
       saveTeam(state.team.concat([{ id: uid(), name: "Nuevo integrante" }]));
+      logActivity("Integrante nuevo agregado");
     });
   }
 
