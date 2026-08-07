@@ -287,10 +287,13 @@
   }
 
   var API_BASE = "/betoalex/api/data/";
+  var AUTH_BASE = "/betoalex/api/auth/";
+  var PUBLIC_BASE = "/betoalex/api/public/";
 
   async function loadKey(key, fallback) {
     try {
-      var res = await fetch(API_BASE + key);
+      var res = await fetch(API_BASE + key, { credentials: "same-origin" });
+      if (res.status === 401) { handleSessionExpired(); return fallback; }
       if (!res.ok) return fallback;
       var val = await res.json();
       return (val === null || val === undefined) ? fallback : val;
@@ -300,11 +303,31 @@
     try {
       var res = await fetch(API_BASE + key, {
         method: "POST",
+        credentials: "same-origin",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(value)
       });
+      if (res.status === 401) { handleSessionExpired(); return false; }
       return res.ok;
     } catch (e) { return false; }
+  }
+  function handleSessionExpired() {
+    if (state.sessionExpiredHandled) return;
+    state.sessionExpiredHandled = true;
+    renderLogin("Tu sesión expiró. Vuelve a entrar.");
+  }
+
+  function isStrongPasswordClient(pw) {
+    return typeof pw === "string" && pw.length >= 10 && /[a-z]/.test(pw) && /[A-Z]/.test(pw) && /[0-9]/.test(pw) && /[^A-Za-z0-9]/.test(pw);
+  }
+  function wirePasswordHint(inputId, hintId) {
+    var input = document.getElementById(inputId);
+    var hint = document.getElementById(hintId);
+    if (!input || !hint) return;
+    input.addEventListener("input", function(){
+      if (!input.value) { hint.style.color = "var(--text-muted)"; return; }
+      hint.style.color = isStrongPasswordClient(input.value) ? "var(--stamp-green)" : "var(--stamp-red)";
+    });
   }
 
   function logActivity(text) {
@@ -501,6 +524,7 @@
             tabButton("equipo", "Equipo") +
             tabButton("historial", "Historial") +
           '</nav>' +
+          '<button type="button" id="logout-btn" class="link-btn" style="color:rgba(236,239,225,0.6); margin-top:auto; padding:10px 14px;">Cerrar sesión</button>' +
         '</aside>' +
         '<main class="content">' +
           '<div id="notice-slot"></div>' +
@@ -524,6 +548,10 @@
         document.querySelectorAll(".tab").forEach(function(b){ b.classList.toggle("tab-active", b.dataset.tab === state.tab); });
         renderTabContent();
       });
+    });
+    document.getElementById("logout-btn").addEventListener("click", async function(){
+      try { await fetch(AUTH_BASE + "logout", { method: "POST", credentials: "same-origin" }); } catch (e) {}
+      window.location.reload();
     });
     var companyInput = document.getElementById("company-name-input");
     companyInput.addEventListener("blur", function(){
@@ -1068,7 +1096,7 @@
   function ticketsHTML() {
     var open = state.tickets.filter(function(t){ return t.status !== "resuelto"; });
     var resolved = state.tickets.filter(function(t){ return t.status === "resuelto"; });
-    var reportUrl = window.location.origin + window.location.pathname.replace(/\/$/, "") + "/reportar";
+    var reportUrl = window.location.origin + "/reportar";
 
     function ticketCard(t) {
       var d = new Date(t.createdAt);
@@ -1140,8 +1168,23 @@
         '</div>'
       );
     }).join("");
+    var me = state.team.find(function(m){ return m.id === state.authId; });
+    var accessCard =
+      '<div class="card">' +
+        '<h3 class="card-title">Mi acceso (usuario y contraseña)</h3>' +
+        '<p class="hint">Esto es lo que usas para iniciar sesión — distinto de tu clave de 4 dígitos. Para cambiarlo, escribe tu contraseña actual.</p>' +
+        '<div class="form-grid">' +
+          '<label>Usuario actual<input type="text" value="' + escapeHtml((me && me.username) || "") + '" disabled /></label>' +
+          '<label>Contraseña actual<input type="password" id="access-current" autocomplete="current-password" /></label>' +
+          '<label>Nuevo usuario (opcional)<input type="text" id="access-new-username" autocomplete="username" /></label>' +
+          '<label>Nueva contraseña (opcional)<input type="password" id="access-new-password" minlength="10" autocomplete="new-password" /></label>' +
+          '<div class="span-2" id="access-pw-hint" style="font-size:11px; color:var(--text-muted); margin:-6px 0 8px;">Mínimo 10 caracteres, con mayúscula, minúscula, número y símbolo.</div>' +
+          '<button type="button" class="btn-primary" id="save-access-btn">Actualizar acceso</button>' +
+        '</div>' +
+      '</div>';
     return (
       '<h2 class="panel-title">Equipo</h2>' +
+      accessCard +
       '<div class="card">' +
         '<p class="hint">Estos nombres se usan para asignar tareas y para registrar quién paga cada gasto. Los datos se comparten entre quienes visiten esta página. Cada integrante puede poner su propia clave de 4 dígitos — se usa para confirmar gastos y aportaciones, como firma de autorización. Para cambiar una clave ya existente hace falta escribir la clave actual.</p>' +
         '<div id="member-rows">' + rows + '</div>' +
@@ -1150,6 +1193,7 @@
     );
   }
   function bindEquipoEvents() {
+    wirePasswordHint("access-new-password", "access-pw-hint");
     document.querySelectorAll("[data-member-id]").forEach(function(input){
       input.addEventListener("blur", function(){
         var id = input.dataset.memberId;
@@ -1195,6 +1239,31 @@
       saveTeam(state.team.concat([{ id: uid(), name: "Nuevo integrante" }]));
       logActivity("Integrante nuevo agregado");
     });
+    var accessBtn = document.getElementById("save-access-btn");
+    if (accessBtn) accessBtn.addEventListener("click", async function(){
+      var current = document.getElementById("access-current").value;
+      var newUsername = document.getElementById("access-new-username").value.trim();
+      var newPassword = document.getElementById("access-new-password").value;
+      if (!current) { flash("Escribe tu contraseña actual.", true); return; }
+      if (newPassword && !isStrongPasswordClient(newPassword)) { flash("La nueva contraseña debe tener al menos 10 caracteres, con mayúscula, minúscula, número y símbolo.", true); return; }
+      try {
+        var res = await fetch(AUTH_BASE + "set-password", {
+          method: "POST", credentials: "same-origin",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ currentPassword: current, username: newUsername, newPassword: newPassword })
+        });
+        var data = await res.json().catch(function(){ return {}; });
+        if (res.ok && data.ok) {
+          flash("Acceso actualizado.");
+          logActivity((state.authName || "Alguien") + " actualizó su acceso (usuario/contraseña)");
+          renderTabContent();
+        } else if (res.status === 401 && data.error === "No autenticado.") {
+          handleSessionExpired();
+        } else {
+          flash(data.error || "No se pudo actualizar.", true);
+        }
+      } catch (e) { flash("No se pudo conectar.", true); }
+    });
   }
 
   // ---------- Página pública: /reportar ----------
@@ -1205,7 +1274,11 @@
   async function initReportForm() {
     var app = document.getElementById("app");
     app.innerHTML = '<div class="loading-wrap"><div class="spinner"></div><p>Cargando…</p></div>';
-    var team = await loadKey("team", []);
+    var team = [];
+    try {
+      var res = await fetch(PUBLIC_BASE + "team-names");
+      if (res.ok) team = await res.json();
+    } catch (e) {}
     renderReportForm(team);
   }
   function renderReportForm(team, successMsg) {
@@ -1234,7 +1307,7 @@
             '<label>Equipo o dispositivo<input type="text" name="device" placeholder="Ej. Computadora de recepción" /></label>' +
             '<label>Tipo de falla<select name="failureType"><option>Hardware</option><option>Software</option><option>Red / Internet</option><option>Impresora</option><option>Otro</option></select></label>' +
             '<label>Urgencia<select name="urgency"><option>Baja</option><option selected>Media</option><option>Alta</option></select></label>' +
-            '<label>Describe el problema<textarea name="failureDescription" rows="4" placeholder="¿Qué está pasando? ¿Desde cuándo?" required></textarea></label>' +
+            '<label>Describe el problema<textarea name="failureDescription" rows="4" placeholder="¿Qué está pasando? ¿Desde cuándo?"></textarea></label>' +
           '</div>' +
           '<button type="submit" class="btn-primary" style="width:100%;">Enviar reporte</button>' +
         '</form>' +
@@ -1255,40 +1328,114 @@
       var reporterName = (fd.get("reporterName") || "").trim();
       if (!reporterName) return;
       var submitBtn = e.target.querySelector("button[type=submit]");
+      if (kind === "tarea" && !(fd.get("title") || "").trim()) { alert("Escribe un título para la tarea."); return; }
+      if (kind === "falla" && (!(fd.get("device") || "").trim() || !(fd.get("failureDescription") || "").trim())) { alert("Completa el equipo y la descripción del problema."); return; }
       submitBtn.disabled = true;
       submitBtn.textContent = "Enviando…";
-      if (kind === "tarea") {
-        var title = (fd.get("title") || "").trim();
-        if (!title) { alert("Escribe un título para la tarea."); submitBtn.disabled = false; submitBtn.textContent = "Enviar reporte"; return; }
-        var tasks = await loadKey("tasks", []);
-        var item = {
-          id: uid(), title: title,
-          description: "Reportado por " + reporterName + (fd.get("taskDescription") ? (": " + fd.get("taskDescription").trim()) : ""),
-          project: "Solicitud externa",
-          assignee: fd.get("assignee"), priority: "media", dueDate: fd.get("dueDate") || "",
-          status: "pendiente", progress: 0, createdAt: Date.now(), updatedAt: Date.now()
-        };
-        tasks = [item].concat(tasks);
-        await saveKey("tasks", tasks);
-      } else {
-        var device = (fd.get("device") || "").trim();
-        var desc = (fd.get("failureDescription") || "").trim();
-        if (!device || !desc) { alert("Completa el equipo y la descripción del problema."); submitBtn.disabled = false; submitBtn.textContent = "Enviar reporte"; return; }
-        var tickets = await loadKey("tickets", []);
-        var t = {
-          id: uid(), reporterName: reporterName, device: device,
-          failureType: fd.get("failureType"), urgency: fd.get("urgency"),
-          description: desc, status: "abierto", resolution: "", createdAt: Date.now()
-        };
-        tickets = [t].concat(tickets);
-        await saveKey("tickets", tickets);
+      var payload = {
+        kind: kind, reporterName: reporterName,
+        title: fd.get("title") || "", taskDescription: fd.get("taskDescription") || "",
+        assignee: fd.get("assignee") || "", dueDate: fd.get("dueDate") || "",
+        device: fd.get("device") || "", failureType: fd.get("failureType") || "",
+        urgency: fd.get("urgency") || "", failureDescription: fd.get("failureDescription") || ""
+      };
+      try {
+        var res = await fetch(PUBLIC_BASE + "report", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(payload)
+        });
+        if (!res.ok) {
+          var errData = await res.json().catch(function(){ return {}; });
+          alert(errData.error || "No se pudo enviar el reporte, intenta de nuevo.");
+          submitBtn.disabled = false; submitBtn.textContent = "Enviar reporte";
+          return;
+        }
+      } catch (err) {
+        alert("No se pudo enviar el reporte, revisa tu conexión.");
+        submitBtn.disabled = false; submitBtn.textContent = "Enviar reporte";
+        return;
       }
       renderReportForm(team, "¡Gracias! Tu reporte fue enviado.");
     });
   }
 
+  // ---------- Login ----------
+  async function renderLogin(errorMsg) {
+    var app = document.getElementById("app");
+    var team = [];
+    try {
+      var res = await fetch(PUBLIC_BASE + "team-names");
+      if (res.ok) team = await res.json();
+    } catch (e) {}
+    var options = team.map(function(m){ return '<option value="' + m.id + '">' + escapeHtml(m.name) + '</option>'; }).join("");
+    app.innerHTML =
+      '<div class="report-page"><div class="report-card">' +
+        '<span class="brand-mark" style="font-size:32px;">§</span>' +
+        '<h1 class="panel-title">Entrar</h1>' +
+        (errorMsg ? '<div class="toast toast-error" style="position:static; display:flex; margin-bottom:14px;">' + escapeHtml(errorMsg) + '</div>' : '') +
+        '<form id="login-form">' +
+          '<label>Usuario<input type="text" name="username" required autocomplete="username" /></label>' +
+          '<label>Contraseña<input type="password" name="password" required autocomplete="current-password" /></label>' +
+          '<button type="submit" class="btn-primary" style="width:100%;">Entrar</button>' +
+        '</form>' +
+        '<details style="margin-top:18px;"><summary class="hint" style="cursor:pointer;">¿Primera vez? Configura tu acceso</summary>' +
+          '<form id="bootstrap-form" style="margin-top:12px;">' +
+            '<label>¿Quién eres?<select name="memberId">' + options + '</select></label>' +
+            '<label>Elige un usuario<input type="text" name="username" required autocomplete="username" /></label>' +
+            '<label>Elige una contraseña<input type="password" name="password" id="bootstrap-password" required minlength="10" autocomplete="new-password" /></label>' +
+            '<div class="hint" id="bootstrap-pw-hint" style="margin:-6px 0 8px;">Mínimo 10 caracteres, con mayúscula, minúscula, número y símbolo.</div>' +
+            '<button type="submit" class="btn-secondary" style="width:100%;">Configurar acceso</button>' +
+          '</form>' +
+        '</details>' +
+      '</div></div>';
+    wirePasswordHint("bootstrap-password", "bootstrap-pw-hint");
+    document.getElementById("login-form").addEventListener("submit", async function(e){
+      e.preventDefault();
+      var fd = new FormData(e.target);
+      try {
+        var res2 = await fetch(AUTH_BASE + "login", {
+          method: "POST", credentials: "same-origin",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ username: fd.get("username"), password: fd.get("password") })
+        });
+        var data = await res2.json().catch(function(){ return {}; });
+        if (res2.ok && data.ok) { state.sessionExpiredHandled = false; state.authId = data.id; state.authName = data.name; init(); }
+        else { renderLogin(data.error || "No se pudo entrar."); }
+      } catch (err) { renderLogin("No se pudo conectar. Revisa tu conexión."); }
+    });
+    var bf = document.getElementById("bootstrap-form");
+    if (bf) bf.addEventListener("submit", async function(e){
+      e.preventDefault();
+      var fd = new FormData(e.target);
+      if (!isStrongPasswordClient(fd.get("password"))) {
+        renderLogin("La contraseña debe tener al menos 10 caracteres, con mayúscula, minúscula, número y símbolo.");
+        return;
+      }
+      try {
+        var res3 = await fetch(AUTH_BASE + "bootstrap", {
+          method: "POST", credentials: "same-origin",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ memberId: fd.get("memberId"), username: fd.get("username"), password: fd.get("password") })
+        });
+        var data2 = await res3.json().catch(function(){ return {}; });
+        if (res3.ok && data2.ok) { renderLogin("Acceso configurado. Ahora inicia sesión."); }
+        else { renderLogin(data2.error || "No se pudo configurar el acceso."); }
+      } catch (err) { renderLogin("No se pudo conectar. Revisa tu conexión."); }
+    });
+  }
+  async function initAuthGate() {
+    var app = document.getElementById("app");
+    app.innerHTML = '<div class="loading-wrap"><div class="spinner"></div><p>Verificando acceso…</p></div>';
+    try {
+      var res = await fetch(AUTH_BASE + "me", { credentials: "same-origin" });
+      var data = await res.json();
+      if (data.loggedIn) { state.authId = data.id; state.authName = data.name; init(); } else { renderLogin(); }
+    } catch (e) { renderLogin("No se pudo verificar tu sesión. Intenta de nuevo."); }
+  }
+
   document.addEventListener("DOMContentLoaded", function(){
-    if (isReportPath()) { initReportForm(); } else { init(); }
+    if (isReportPath()) { initReportForm(); } else { initAuthGate(); }
   });
 </script>
 </body>
