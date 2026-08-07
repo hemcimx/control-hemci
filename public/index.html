@@ -1191,9 +1191,21 @@
           '<button type="button" class="btn-primary" id="save-access-btn">Actualizar acceso</button>' +
         '</div>' +
       '</div>';
+    var reportAccessCard =
+      '<div class="card">' +
+        '<h3 class="card-title">Acceso genérico a hemci.mx/reportar</h3>' +
+        '<p class="hint">Usuario y contraseña compartidos que le das a quien necesite mandar reportes, sin cuenta propia. Estado: <span id="report-access-status">cargando…</span></p>' +
+        '<div class="form-grid">' +
+          '<label>Usuario<input type="text" id="report-access-username" autocomplete="off" placeholder="Ej. hemci" /></label>' +
+          '<label>Contraseña<input type="password" id="report-access-password" minlength="10" autocomplete="new-password" /></label>' +
+          '<div class="span-2" id="report-access-pw-hint" style="font-size:11px; color:var(--text-muted); margin:-6px 0 8px;">Mínimo 10 caracteres, con mayúscula, minúscula, número y símbolo.</div>' +
+          '<button type="button" class="btn-primary" id="save-report-access-btn">Guardar acceso</button>' +
+        '</div>' +
+      '</div>';
     return (
       '<h2 class="panel-title">Equipo</h2>' +
       accessCard +
+      reportAccessCard +
       '<div class="card">' +
         '<p class="hint">Estos nombres se usan para asignar tareas y para registrar quién paga cada gasto. Los datos se comparten entre quienes visiten esta página. Cada integrante puede poner su propia clave de 4 dígitos — se usa para confirmar gastos y aportaciones, como firma de autorización. Para cambiar una clave ya existente hace falta escribir la clave actual.</p>' +
         '<div id="member-rows">' + rows + '</div>' +
@@ -1203,6 +1215,46 @@
   }
   function bindEquipoEvents() {
     wirePasswordHint("access-new-password", "access-pw-hint");
+    wirePasswordHint("report-access-password", "report-access-pw-hint");
+    (async function(){
+      var statusEl = document.getElementById("report-access-status");
+      var userInput = document.getElementById("report-access-username");
+      try {
+        var res = await fetch(AUTH_BASE + "report-access-status", { credentials: "same-origin" });
+        var data = await res.json();
+        if (data.configured) {
+          statusEl.textContent = "configurado (usuario: " + data.username + ")";
+          if (userInput && !userInput.value) userInput.value = data.username;
+        } else {
+          statusEl.textContent = "sin configurar todavía — cualquiera con cuenta propia puede seguir usando /reportar mientras tanto";
+        }
+      } catch (e) { statusEl.textContent = "no se pudo consultar"; }
+    })();
+    var saveReportAccessBtn = document.getElementById("save-report-access-btn");
+    if (saveReportAccessBtn) saveReportAccessBtn.addEventListener("click", async function(){
+      var username = document.getElementById("report-access-username").value.trim();
+      var password = document.getElementById("report-access-password").value;
+      if (!username) { flash("Escribe un usuario.", true); return; }
+      if (!isStrongPasswordClient(password)) { flash("La contraseña debe tener al menos 10 caracteres, con mayúscula, minúscula, número y símbolo.", true); return; }
+      try {
+        var res = await fetch(AUTH_BASE + "set-report-access", {
+          method: "POST", credentials: "same-origin",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ username: username, password: password })
+        });
+        var data = await res.json().catch(function(){ return {}; });
+        if (res.ok && data.ok) {
+          flash("Acceso de reportes actualizado.");
+          logActivity((state.authName || "Alguien") + " actualizó el acceso genérico de /reportar");
+          document.getElementById("report-access-password").value = "";
+          renderTabContent();
+        } else if (res.status === 401 && data.error === "No autenticado.") {
+          handleSessionExpired();
+        } else {
+          flash(data.error || "No se pudo guardar.", true);
+        }
+      } catch (e) { flash("No se pudo conectar.", true); }
+    });
     document.querySelectorAll("[data-member-id]").forEach(function(input){
       input.addEventListener("blur", function(){
         var id = input.dataset.memberId;
