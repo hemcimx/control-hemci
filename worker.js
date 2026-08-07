@@ -118,13 +118,50 @@ function isStrongPassword(pw) {
 }
 var PASSWORD_RULE_MSG = "La contraseña debe tener al menos 10 caracteres, con mayúscula, minúscula, número y símbolo.";
 
+function timingSafeEqual(a, b) {
+  a = String(a); b = String(b);
+  if (a.length !== b.length) return false;
+  var diff = 0;
+  for (var i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
+}
+async function requireReportAccess(request, env) {
+  // Acceso válido si tiene sesión de socio (login normal) O el acceso genérico de /reportar.
+  var adminSession = await requireSession(request, env);
+  if (adminSession) return true;
+  if (!env.SESSION_SECRET) return false;
+  var token = getCookie(request, "report_access");
+  var payload = await verifySession(token, env.SESSION_SECRET);
+  return !!(payload && payload.scope === "report");
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
     const innerPath = stripBase(url.pathname);
 
-    // ---- Endpoint público: enviar un reporte (sin sesión) ----
+    // ---- Acceso genérico compartido para /reportar ----
+    if (innerPath === "/api/public/report-login" && request.method === "POST") {
+      if (!env.SESSION_SECRET) return jsonError("Servidor sin configurar.", 500);
+      if (!env.REPORT_USERNAME || !env.REPORT_PASSWORD) return jsonError("El acceso a reportes no está configurado todavía.", 500);
+      var rlBody; try { rlBody = await request.json(); } catch (e) { return jsonError("Solicitud inválida.", 400); }
+      var ru = String(rlBody.username || "");
+      var rp = String(rlBody.password || "");
+      if (!timingSafeEqual(ru, env.REPORT_USERNAME) || !timingSafeEqual(rp, env.REPORT_PASSWORD)) {
+        return jsonError("Usuario o contraseña incorrectos.", 401);
+      }
+      var rexp = Date.now() + 90 * 24 * 60 * 60 * 1000;
+      var rtoken = await signSession({ scope: "report", exp: rexp }, env.SESSION_SECRET);
+      return jsonResponse({ ok: true }, 200, { "Set-Cookie": "report_access=" + rtoken + "; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=" + 90 * 24 * 60 * 60 });
+    }
+    if (innerPath === "/api/public/report-check" && request.method === "GET") {
+      var hasAccess = await requireReportAccess(request, env);
+      return jsonResponse({ access: hasAccess });
+    }
+
+    // ---- Endpoint público: enviar un reporte (requiere acceso genérico o sesión de socio) ----
     if (innerPath === "/api/public/report" && request.method === "POST") {
+      if (!(await requireReportAccess(request, env))) return jsonError("No autorizado.", 401);
       if (!env.HEMCI_KV) return jsonError("KV no configurado.", 500);
       var body;
       try { body = await request.json(); } catch (e) { return jsonError("Solicitud inválida.", 400); }
