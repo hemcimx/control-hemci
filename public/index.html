@@ -188,6 +188,17 @@
   function todayISO() {
     return new Date().toISOString().slice(0, 10);
   }
+  function formatDateMX(isoDate) {
+    if (!isoDate || isoDate.length < 10) return isoDate || "—";
+    var parts = isoDate.slice(0, 10).split("-");
+    if (parts.length !== 3) return isoDate;
+    return parts[2] + "/" + parts[1] + "/" + parts[0];
+  }
+  function formatDateTimeMX(ts) {
+    var d = new Date(ts);
+    var pad = function(n){ return String(n).padStart(2, "0"); };
+    return pad(d.getDate()) + "/" + pad(d.getMonth() + 1) + "/" + d.getFullYear() + ", " + pad(d.getHours()) + ":" + pad(d.getMinutes());
+  }
   function escapeHtml(str) {
     return String(str == null ? "" : str).replace(/[&<>"']/g, function(c) {
       return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
@@ -649,7 +660,7 @@
           (upcoming.length === 0 ? '<p class="empty">No hay fechas próximas.</p>' :
             upcoming.map(function(t){
               return '<div class="feed-item"><strong>' + escapeHtml(t.title) + '</strong> — ' + escapeHtml(memberName(t.assignee)) +
-                '<span class="mono" style="float:right">' + t.dueDate + '</span></div>';
+                '<span class="mono" style="float:right">' + formatDateMX(t.dueDate) + '</span></div>';
             }).join("")) +
         '</div>' +
       '</div>' +
@@ -748,7 +759,7 @@
         (sorted.length === 0 ? '<p class="empty">Aún no hay gastos registrados en este periodo.</p>' :
           '<table><thead><tr><th>Fecha</th><th>Categoría</th><th>Descripción</th><th>Pagó</th><th>Monto</th><th>Estado</th><th>Recibo</th><th></th></tr></thead><tbody>' +
           sorted.map(function(e){
-            return '<tr><td class="mono" data-label="Fecha">' + e.date + '</td><td data-label="Categoría">' + escapeHtml(e.category) + '</td><td data-label="Descripción">' +
+            return '<tr><td class="mono" data-label="Fecha">' + formatDateMX(e.date) + '</td><td data-label="Categoría">' + escapeHtml(e.category) + '</td><td data-label="Descripción">' +
               (escapeHtml(e.description) || "—") + '</td><td data-label="Pagó">' + escapeHtml(memberName(e.paidBy)) + '</td>' +
               '<td class="mono amount" data-label="Monto">' + currency(e.amount) + '</td>' +
               '<td data-label="Estado">' + confirmStampHTML(e) + confirmControlHTML(e, "expenses") + '</td>' +
@@ -828,7 +839,7 @@
         .slice().sort(function(a,b){ return b.date.localeCompare(a.date); });
       var out = [["Fecha","Categoría","Descripción","Pagó","Monto","Estado"]];
       rows.forEach(function(e){
-        out.push([e.date, e.category, e.description || "", memberName(e.paidBy), e.amount, isFullyConfirmed(e) ? "Confirmada" : "Pendiente"]);
+        out.push([formatDateMX(e.date), e.category, e.description || "", memberName(e.paidBy), e.amount, isFullyConfirmed(e) ? "Confirmada" : "Pendiente"]);
       });
       downloadCSV("gastos-" + (monthFilter || "todos") + ".csv", out);
     });
@@ -897,7 +908,7 @@
         (t.project ? '<div class="task-project">' + escapeHtml(t.project) + '</div>' : "") +
         (t.description ? '<p class="task-desc">' + escapeHtml(t.description) + '</p>' : "") +
         '<div class="task-meta"><span>' + escapeHtml(memberName(t.assignee)) + '</span>' +
-        (t.dueDate ? '<span class="' + (overdue ? "overdue" : "") + '">' + t.dueDate + '</span>' : "") + '</div>' +
+        (t.dueDate ? '<span class="' + (overdue ? "overdue" : "") + '">' + formatDateMX(t.dueDate) + '</span>' : "") + '</div>' +
         (t.status !== "cancelada" ?
           '<div class="progress-row"><input type="range" min="0" max="100" step="5" value="' + (t.progress||0) + '" data-progress="' + t.id + '" />' +
           '<span class="mono" id="progress-label-' + t.id + '">' + (t.progress||0) + '%</span></div>' : "") +
@@ -1039,7 +1050,7 @@
         (sorted.length === 0 ? '<p class="empty">Todavía no hay aportaciones registradas.</p>' :
           '<table><thead><tr><th>Fecha</th><th>Quién</th><th>Concepto</th><th>Monto</th><th>Estado</th><th></th></tr></thead><tbody>' +
           sorted.map(function(c){
-            return '<tr><td class="mono" data-label="Fecha">' + c.date + '</td><td data-label="Quién">' + escapeHtml(memberName(c.memberId)) + '</td><td data-label="Concepto">' +
+            return '<tr><td class="mono" data-label="Fecha">' + formatDateMX(c.date) + '</td><td data-label="Quién">' + escapeHtml(memberName(c.memberId)) + '</td><td data-label="Concepto">' +
               (escapeHtml(c.note) || "—") + '</td><td class="mono amount" data-label="Monto">' + currency(c.amount) + '</td>' +
               '<td data-label="Estado">' + confirmStampHTML(c) + confirmControlHTML(c, "contributions") + '</td>' +
               '<td data-label=""><button class="icon-btn" data-delete-contribution="' + c.id + '" aria-label="Eliminar aportación">✕ Eliminar</button></td></tr>';
@@ -1068,7 +1079,7 @@
       var rows = state.contributions.slice().sort(function(a,b){ return b.date.localeCompare(a.date); });
       var out = [["Fecha","Quién","Concepto","Monto","Estado"]];
       rows.forEach(function(c){
-        out.push([c.date, memberName(c.memberId), c.note || "", c.amount, isFullyConfirmed(c) ? "Confirmada" : "Pendiente"]);
+        out.push([formatDateMX(c.date), memberName(c.memberId), c.note || "", c.amount, isFullyConfirmed(c) ? "Confirmada" : "Pendiente"]);
       });
       downloadCSV("aportaciones.csv", out);
     });
@@ -1081,8 +1092,7 @@
       return '<h2 class="panel-title">Historial</h2><p class="empty">Todavía no hay actividad registrada.</p>';
     }
     var rows = state.auditLog.map(function(entry){
-      var d = new Date(entry.ts);
-      var when = d.toLocaleString("es-MX", { dateStyle: "short", timeStyle: "short" });
+      var when = formatDateTimeMX(entry.ts);
       return '<div class="feed-item"><span class="mono" style="color:var(--text-muted);">' + when + '</span> — <strong>' + escapeHtml(entry.actor) + '</strong>: ' + escapeHtml(entry.text) + '</div>';
     }).join("");
     return (
@@ -1099,8 +1109,7 @@
     var reportUrl = window.location.origin + "/reportar";
 
     function ticketCard(t) {
-      var d = new Date(t.createdAt);
-      var when = d.toLocaleString("es-MX", { dateStyle: "short", timeStyle: "short" });
+      var when = formatDateTimeMX(t.createdAt);
       var urgClass = t.urgency === "Alta" ? "alta" : (t.urgency === "Baja" ? "baja" : "media");
       return (
         '<div class="task-card">' +
