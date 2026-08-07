@@ -132,6 +132,17 @@ function currentMonthPassword() {
   var year = parts.find(function(p){ return p.type === "year"; }).value;
   return MESES_ES[month - 1] + year;
 }
+function secondsUntilEndOfMonthMX() {
+  var parts = new Intl.DateTimeFormat("en-US", { timeZone: "America/Mexico_City", month: "numeric", year: "numeric" }).formatToParts(new Date());
+  var month = parseInt(parts.find(function(p){ return p.type === "month"; }).value, 10);
+  var year = parseInt(parts.find(function(p){ return p.type === "year"; }).value, 10);
+  var nextMonth = month === 12 ? 1 : month + 1;
+  var nextYear = month === 12 ? year + 1 : year;
+  // Medianoche del día 1 del próximo mes, hora Ciudad de México (UTC-6 todo el año).
+  var endUTC = Date.UTC(nextYear, nextMonth - 1, 1, 6, 0, 0);
+  var diff = Math.floor((endUTC - Date.now()) / 1000);
+  return diff > 0 ? diff : 3600;
+}
 async function requireReportAccess(request, env) {
   // Acceso válido si tiene sesión de socio (login normal) O el acceso genérico de /reportar.
   var adminSession = await requireSession(request, env);
@@ -159,9 +170,10 @@ export default {
       if (!timingSafeEqual(ru, expectedUsername) || !timingSafeEqual(rp, currentMonthPassword())) {
         return jsonError("Usuario o contraseña incorrectos.", 401);
       }
-      var rexp = Date.now() + 90 * 24 * 60 * 60 * 1000;
+      var maxAge = secondsUntilEndOfMonthMX();
+      var rexp = Date.now() + maxAge * 1000;
       var rtoken = await signSession({ scope: "report", exp: rexp }, env.SESSION_SECRET);
-      return jsonResponse({ ok: true }, 200, { "Set-Cookie": "report_access=" + rtoken + "; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=" + 90 * 24 * 60 * 60 });
+      return jsonResponse({ ok: true }, 200, { "Set-Cookie": "report_access=" + rtoken + "; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=" + maxAge });
     }
     if (innerPath === "/api/public/report-check" && request.method === "GET") {
       var hasAccess = await requireReportAccess(request, env);
