@@ -162,6 +162,33 @@ async function nextTicketFolio(env) {
   return "HEMCI-" + year + "-" + String(counter).padStart(4, "0");
 }
 
+var LOGIN_MAX_ATTEMPTS = 5;
+var LOGIN_LOCKOUT_SECONDS = 15 * 60;
+async function isLoginLocked(env, key) {
+  var raw = await env.HEMCI_KV.get(key);
+  if (!raw) return null;
+  var record = JSON.parse(raw);
+  if (record.lockedUntil && Date.now() < record.lockedUntil) {
+    return Math.ceil((record.lockedUntil - Date.now()) / 1000);
+  }
+  return null;
+}
+async function recordLoginResult(env, key, success) {
+  if (success) { await env.HEMCI_KV.delete(key).catch(function(){}); return; }
+  var raw = await env.HEMCI_KV.get(key);
+  var record = raw ? JSON.parse(raw) : { count: 0 };
+  record.count = (record.count || 0) + 1;
+  if (record.count >= LOGIN_MAX_ATTEMPTS) {
+    record.lockedUntil = Date.now() + LOGIN_LOCKOUT_SECONDS * 1000;
+    record.count = 0;
+  }
+  await env.HEMCI_KV.put(key, JSON.stringify(record), { expirationTtl: LOGIN_LOCKOUT_SECONDS + 300 });
+}
+function lockedMessage(seconds) {
+  var mins = Math.ceil(seconds / 60);
+  return "Demasiados intentos fallidos. Intenta de nuevo en " + mins + " minuto" + (mins === 1 ? "" : "s") + ".";
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -170,15 +197,18 @@ export default {
     // ---- Acceso genérico compartido para /reportar (usuario guardado + contraseña del mes) ----
     if (innerPath === "/api/public/report-login" && request.method === "POST") {
       if (!env.SESSION_SECRET || !env.HEMCI_KV) return jsonError("Servidor sin configurar.", 500);
+      var reportLockKey = "loginlock:report";
+      var reportLockedSeconds = await isLoginLocked(env, reportLockKey);
+      if (reportLockedSeconds) return jsonError(lockedMessage(reportLockedSeconds), 429);
       var credsRaw = await env.HEMCI_KV.get("report_access_creds");
       var creds = credsRaw ? JSON.parse(credsRaw) : null;
       var expectedUsername = (creds && creds.username) ? creds.username : "hemci";
       var rlBody; try { rlBody = await request.json(); } catch (e) { return jsonError("Solicitud inválida.", 400); }
       var ru = String(rlBody.username || "").trim().toLowerCase();
       var rp = String(rlBody.password || "").trim();
-      if (!timingSafeEqual(ru, expectedUsername) || !timingSafeEqual(rp, currentMonthPassword())) {
-        return jsonError("Usuario o contraseña incorrectos.", 401);
-      }
+      var reportOk = timingSafeEqual(ru, expectedUsername) && timingSafeEqual(rp, currentMonthPassword());
+      await recordLoginResult(env, reportLockKey, reportOk);
+      if (!reportOk) return jsonError("Usuario o contraseña incorrectos.", 401);
       var maxAge = secondsUntilEndOfMonthMX();
       var rexp = Date.now() + maxAge * 1000;
       var rtoken = await signSession({ scope: "report", exp: rexp }, env.SESSION_SECRET);
@@ -251,12 +281,15 @@ export default {
       var username = String(lbody.username || "").trim().toLowerCase();
       var password = String(lbody.password || "");
       if (!username || !password) return jsonError("Faltan datos.", 400);
+      var loginLockKey = "loginlock:" + username;
+      var loginLockedSeconds = await isLoginLocked(env, loginLockKey);
+      if (loginLockedSeconds) return jsonError(lockedMessage(loginLockedSeconds), 429);
       var teamRaw1 = await env.HEMCI_KV.get("team");
       var team1 = teamRaw1 ? JSON.parse(teamRaw1) : [];
       var member = team1.find(function (m) { return String(m.username || "").toLowerCase() === username; });
-      if (!member || !member.passwordHash) return jsonError("Usuario o contraseña incorrectos.", 401);
-      var ok = await verifyPassword(password, member.passwordHash);
-      if (!ok) return jsonError("Usuario o contraseña incorrectos.", 401);
+      var ok = (member && member.passwordHash) ? await verifyPassword(password, member.passwordHash) : false;
+      await recordLoginResult(env, loginLockKey, ok);
+      if (!member || !member.passwordHash || !ok) return jsonError("Usuario o contraseña incorrectos.", 401);
       var exp = Date.now() + 7 * 24 * 60 * 60 * 1000;
       var token = await signSession({ sub: member.id, name: member.name, exp: exp }, env.SESSION_SECRET);
       return jsonResponse({ ok: true, name: member.name, id: member.id }, 200, { "Set-Cookie": sessionCookieHeader(token, 7 * 24 * 60 * 60) });
