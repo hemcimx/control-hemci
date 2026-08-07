@@ -860,6 +860,7 @@
     var eligible = state.team.filter(function(m){ return m.id !== task.assignee && m.pinHash; });
     if (eligible.length === 0) {
       updateTask(id, change);
+      flash("Se marcó como hecha SIN confirmación — el otro integrante no tiene clave configurada todavía (ve a Equipo).", true);
       return;
     }
     pendingTaskChanges[id] = change;
