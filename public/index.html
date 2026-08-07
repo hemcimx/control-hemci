@@ -111,6 +111,11 @@
   .confirm-panel select { width: auto; }
   .confirm-error { color: var(--stamp-red); font-size: 11px; }
   .member-pin-row { display: flex; align-items: center; gap: 8px; margin: 2px 0 14px; flex-wrap: wrap; }
+  .report-page { min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 24px; }
+  .report-card { max-width: 480px; width: 100%; background: rgba(255,255,255,0.7); border: 1px solid var(--paper-line); border-radius: 12px; padding: 24px; }
+  .report-card label { display: block; font-size: 12px; color: var(--ink-soft); margin-bottom: 12px; }
+  .report-card input, .report-card select, .report-card textarea { width: 100%; margin-top: 4px; font-family: var(--font-body); font-size: 14px; padding: 8px 9px; border: 1px solid var(--paper-line); border-radius: 6px; background: #fff; color: var(--ink); resize: vertical; }
+  .report-success { background: var(--stamp-green); color: #fff; border-radius: 6px; padding: 10px 14px; margin-bottom: 16px; font-size: 13px; }
   @media (max-width: 760px) {
     .ledger-app { flex-direction: column; }
     .sidebar { width: 100%; flex-direction: row; align-items: center; padding: 12px 14px; gap: 14px; overflow-x: auto; }
@@ -164,6 +169,7 @@
     settings: { companyName: "Nuestro Negocio" },
     budgets: {},
     auditLog: [],
+    tickets: [],
     loading: true,
     notice: null,
     gastosMonthFilter: new Date().toISOString().slice(0,7),
@@ -365,9 +371,10 @@
       loadKey("settings", { companyName: "Nuestro Negocio" }),
       loadKey("contributions", []),
       loadKey("budgets", {}),
-      loadKey("auditlog", [])
+      loadKey("auditlog", []),
+      loadKey("tickets", [])
     ]);
-    var expenses = results[0], tasks = results[1], settings = results[2], contributions = results[3], budgets = results[4], auditLog = results[5];
+    var expenses = results[0], tasks = results[1], settings = results[2], contributions = results[3], budgets = results[4], auditLog = results[5], tickets = results[6];
     var team = teamResult.value;
     if (teamResult.failed) {
       // No se pudo confirmar si hay equipo guardado (falla de red/servidor).
@@ -386,6 +393,7 @@
     state.settings = settings;
     state.budgets = budgets || {};
     state.auditLog = auditLog || [];
+    state.tickets = tickets || [];
     state.loading = false;
     render();
     if (state.loadError) {
@@ -489,6 +497,7 @@
             tabButton("gastos", "Gastos") +
             tabButton("aportaciones", "Aportaciones") +
             tabButton("tareas", "Tareas") +
+            tabButton("soporte", "Soporte IT") +
             tabButton("equipo", "Equipo") +
             tabButton("historial", "Historial") +
           '</nav>' +
@@ -542,6 +551,7 @@
     if (state.tab === "gastos") return gastosHTML();
     if (state.tab === "aportaciones") return aportacionesHTML();
     if (state.tab === "tareas") return tareasHTML();
+    if (state.tab === "soporte") return ticketsHTML();
     if (state.tab === "equipo") return equipoHTML();
     if (state.tab === "historial") return historialHTML();
     return "";
@@ -551,6 +561,7 @@
     if (state.tab === "gastos") bindGastosEvents();
     if (state.tab === "aportaciones") bindAportacionesEvents();
     if (state.tab === "tareas") bindTareasEvents();
+    if (state.tab === "soporte") bindTicketsEvents();
     if (state.tab === "equipo") bindEquipoEvents();
   }
 
@@ -579,10 +590,14 @@
       .concat(state.tasks.map(function(t){ return { ts: t.updatedAt || t.createdAt || 0, text: escapeHtml(t.title) + " — " + (STATUS_META[t.status] ? STATUS_META[t.status].label : "") + " (" + (t.progress||0) + "%)" }; }))
       .sort(function(a,b){ return b.ts - a.ts; }).slice(0,6);
 
+    var openTickets = state.tickets.filter(function(t){ return t.status !== "resuelto"; }).length;
+
     return (
       '<h2 class="panel-title">Resumen</h2>' +
       (pendingExpenses + pendingContributions > 0 ?
         '<p class="hint">⚠ ' + (pendingExpenses + pendingContributions) + ' movimiento(s) esperando confirmación de clave — no cuentan todavía en los totales de abajo.</p>' : '') +
+      (openTickets > 0 ?
+        '<p class="hint">⚠ ' + openTickets + ' reporte(s) de soporte IT sin resolver — revisa la pestaña Soporte IT.</p>' : '') +
       '<div class="stat-grid">' +
         '<div class="stat-card"><div class="stat-label">Gastado este mes</div><div class="stat-value">' + currency(monthTotal) + '</div></div>' +
         '<div class="stat-card"><div class="stat-label">Tareas pendientes</div><div class="stat-value">' + pendientes + '</div></div>' +
@@ -1049,6 +1064,65 @@
     );
   }
 
+  // ---------- Soporte IT ----------
+  function ticketsHTML() {
+    var open = state.tickets.filter(function(t){ return t.status !== "resuelto"; });
+    var resolved = state.tickets.filter(function(t){ return t.status === "resuelto"; });
+    var reportUrl = window.location.origin + window.location.pathname.replace(/\/$/, "") + "/reportar";
+
+    function ticketCard(t) {
+      var d = new Date(t.createdAt);
+      var when = d.toLocaleString("es-MX", { dateStyle: "short", timeStyle: "short" });
+      var urgClass = t.urgency === "Alta" ? "alta" : (t.urgency === "Baja" ? "baja" : "media");
+      return (
+        '<div class="task-card">' +
+          '<div class="task-card-top"><span class="stamp ' + (t.status === "resuelto" ? "stamp-hecho" : "stamp-pendiente") + '">' + (t.status === "resuelto" ? "Resuelto" : "Abierto") + '</span>' +
+          '<span class="priority priority-' + urgClass + '">' + escapeHtml(t.urgency || "Media") + '</span></div>' +
+          '<h4>' + escapeHtml(t.device) + (t.failureType ? " — " + escapeHtml(t.failureType) : "") + '</h4>' +
+          '<p class="task-desc">' + escapeHtml(t.description) + '</p>' +
+          '<div class="task-meta"><span>Reportó: ' + escapeHtml(t.reporterName) + '</span><span>' + when + '</span></div>' +
+          (t.status === "resuelto" ?
+            ('<p class="hint" style="margin:8px 0 0;"><strong>Solución:</strong> ' + escapeHtml(t.resolution || "") + '</p>') :
+            ('<div style="margin-top:8px;"><label class="hint" style="display:block; margin:0 0 4px;">Qué se hizo</label>' +
+             '<textarea rows="2" id="resolution-' + t.id + '" placeholder="Describe la solución aplicada" style="width:100%; font-family:var(--font-body); font-size:13px; padding:6px 8px; border:1px solid var(--paper-line); border-radius:6px;"></textarea>' +
+             '<button type="button" class="btn-primary" style="margin-top:6px;" data-resolve-ticket="' + t.id + '">Marcar resuelto</button></div>')) +
+          '<div class="task-actions" style="margin-top:8px;"><span></span><button class="icon-btn" data-delete-ticket="' + t.id + '" aria-label="Eliminar reporte">✕ Eliminar</button></div>' +
+        '</div>'
+      );
+    }
+
+    return (
+      '<h2 class="panel-title">Soporte IT</h2>' +
+      '<div class="card"><p class="hint" style="margin:0;">Comparte este link para que cualquiera pueda mandar un reporte, sin necesidad de entrar a la app: <span class="mono">' + escapeHtml(reportUrl) + '</span></p></div>' +
+      '<h3 class="card-title">Abiertos (' + open.length + ')</h3>' +
+      (open.length === 0 ? '<p class="empty">No hay reportes abiertos.</p>' : '<div class="board-col-body">' + open.map(ticketCard).join("") + '</div>') +
+      (resolved.length > 0 ? ('<h3 class="card-title" style="margin-top:20px;">Resueltos</h3><div class="board-col-body">' + resolved.map(ticketCard).join("") + '</div>') : '')
+    );
+  }
+  function bindTicketsEvents() {
+    document.querySelectorAll("[data-resolve-ticket]").forEach(function(btn){
+      btn.addEventListener("click", async function(){
+        var id = btn.dataset.resolveTicket;
+        var textarea = document.getElementById("resolution-" + id);
+        var resolution = textarea ? textarea.value.trim() : "";
+        if (!resolution) { flash("Escribe qué se hizo antes de marcar resuelto.", true); return; }
+        var ticket = state.tickets.find(function(t){ return t.id === id; });
+        state.tickets = state.tickets.map(function(t){ return t.id === id ? Object.assign({}, t, { status: "resuelto", resolution: resolution, resolvedAt: Date.now() }) : t; });
+        await saveKey("tickets", state.tickets);
+        if (ticket) logActivity('Reporte de soporte resuelto: "' + ticket.device + '"');
+        renderTabContent();
+      });
+    });
+    document.querySelectorAll("[data-delete-ticket]").forEach(function(btn){
+      btn.addEventListener("click", async function(){
+        var id = btn.dataset.deleteTicket;
+        state.tickets = state.tickets.filter(function(t){ return t.id !== id; });
+        await saveKey("tickets", state.tickets);
+        renderTabContent();
+      });
+    });
+  }
+
   // ---------- Equipo ----------
   function equipoHTML() {
     var rows = state.team.map(function(m){
@@ -1123,7 +1197,99 @@
     });
   }
 
-  document.addEventListener("DOMContentLoaded", init);
+  // ---------- Página pública: /reportar ----------
+  function isReportPath() {
+    var parts = window.location.pathname.replace(/\/+$/, "").split("/");
+    return parts[parts.length - 1] === "reportar";
+  }
+  async function initReportForm() {
+    var app = document.getElementById("app");
+    app.innerHTML = '<div class="loading-wrap"><div class="spinner"></div><p>Cargando…</p></div>';
+    var team = await loadKey("team", []);
+    renderReportForm(team);
+  }
+  function renderReportForm(team, successMsg) {
+    var app = document.getElementById("app");
+    var teamOptions = team.map(function(m){ return '<option value="' + m.id + '">' + escapeHtml(m.name) + '</option>'; }).join("");
+    app.innerHTML =
+      '<div class="report-page"><div class="report-card">' +
+        '<span class="brand-mark" style="font-size:32px;">§</span>' +
+        '<h1 class="panel-title">Reportar algo al equipo</h1>' +
+        (successMsg ? '<div class="report-success">' + escapeHtml(successMsg) + '</div>' : '') +
+        '<form id="report-form">' +
+          '<label>Tipo de reporte' +
+            '<select name="kind" id="report-kind">' +
+              '<option value="tarea">Tarea general (ej. agendar visita o videollamada)</option>' +
+              '<option value="falla">Falla técnica / soporte IT</option>' +
+            '</select>' +
+          '</label>' +
+          '<label>Tu nombre<input type="text" name="reporterName" required placeholder="Ej. Karla, recepción" /></label>' +
+          '<div id="report-fields-tarea">' +
+            '<label>Título<input type="text" name="title" placeholder="Ej. Agendar videollamada con proveedor" /></label>' +
+            '<label>¿Para quién es?<select name="assignee">' + teamOptions + '</select></label>' +
+            '<label>Fecha (opcional)<input type="date" name="dueDate" /></label>' +
+            '<label>Detalles<textarea name="taskDescription" rows="3" placeholder="Detalles de lo que se necesita"></textarea></label>' +
+          '</div>' +
+          '<div id="report-fields-falla" style="display:none">' +
+            '<label>Equipo o dispositivo<input type="text" name="device" placeholder="Ej. Computadora de recepción" /></label>' +
+            '<label>Tipo de falla<select name="failureType"><option>Hardware</option><option>Software</option><option>Red / Internet</option><option>Impresora</option><option>Otro</option></select></label>' +
+            '<label>Urgencia<select name="urgency"><option>Baja</option><option selected>Media</option><option>Alta</option></select></label>' +
+            '<label>Describe el problema<textarea name="failureDescription" rows="4" placeholder="¿Qué está pasando? ¿Desde cuándo?" required></textarea></label>' +
+          '</div>' +
+          '<button type="submit" class="btn-primary" style="width:100%;">Enviar reporte</button>' +
+        '</form>' +
+      '</div></div>';
+    bindReportForm(team);
+  }
+  function bindReportForm(team) {
+    var kindSelect = document.getElementById("report-kind");
+    kindSelect.addEventListener("change", function(e){
+      var isFalla = e.target.value === "falla";
+      document.getElementById("report-fields-tarea").style.display = isFalla ? "none" : "block";
+      document.getElementById("report-fields-falla").style.display = isFalla ? "block" : "none";
+    });
+    document.getElementById("report-form").addEventListener("submit", async function(e){
+      e.preventDefault();
+      var fd = new FormData(e.target);
+      var kind = fd.get("kind");
+      var reporterName = (fd.get("reporterName") || "").trim();
+      if (!reporterName) return;
+      var submitBtn = e.target.querySelector("button[type=submit]");
+      submitBtn.disabled = true;
+      submitBtn.textContent = "Enviando…";
+      if (kind === "tarea") {
+        var title = (fd.get("title") || "").trim();
+        if (!title) { alert("Escribe un título para la tarea."); submitBtn.disabled = false; submitBtn.textContent = "Enviar reporte"; return; }
+        var tasks = await loadKey("tasks", []);
+        var item = {
+          id: uid(), title: title,
+          description: "Reportado por " + reporterName + (fd.get("taskDescription") ? (": " + fd.get("taskDescription").trim()) : ""),
+          project: "Solicitud externa",
+          assignee: fd.get("assignee"), priority: "media", dueDate: fd.get("dueDate") || "",
+          status: "pendiente", progress: 0, createdAt: Date.now(), updatedAt: Date.now()
+        };
+        tasks = [item].concat(tasks);
+        await saveKey("tasks", tasks);
+      } else {
+        var device = (fd.get("device") || "").trim();
+        var desc = (fd.get("failureDescription") || "").trim();
+        if (!device || !desc) { alert("Completa el equipo y la descripción del problema."); submitBtn.disabled = false; submitBtn.textContent = "Enviar reporte"; return; }
+        var tickets = await loadKey("tickets", []);
+        var t = {
+          id: uid(), reporterName: reporterName, device: device,
+          failureType: fd.get("failureType"), urgency: fd.get("urgency"),
+          description: desc, status: "abierto", resolution: "", createdAt: Date.now()
+        };
+        tickets = [t].concat(tickets);
+        await saveKey("tickets", tickets);
+      }
+      renderReportForm(team, "¡Gracias! Tu reporte fue enviado.");
+    });
+  }
+
+  document.addEventListener("DOMContentLoaded", function(){
+    if (isReportPath()) { initReportForm(); } else { init(); }
+  });
 </script>
 </body>
 </html>
