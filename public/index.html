@@ -1820,7 +1820,7 @@
       var folio = new FormData(e.target).get("folio").trim();
       if (!folio) return;
       try {
-        var res = await fetch(PUBLIC_BASE + "ticket-status?folio=" + encodeURIComponent(folio));
+        var res = await fetch(PUBLIC_BASE + "ticket-status?folio=" + encodeURIComponent(folio), { credentials: "same-origin" });
         var data = await res.json();
         if (!res.ok) { renderTicketLookup(team, '<p class="hint" style="color:var(--stamp-red);">' + escapeHtml(data.error || "No se encontró ese folio.") + '</p>'); return; }
         var statusLabel = data.status === "resuelto" ? "Resuelto" : "Abierto (en proceso)";
