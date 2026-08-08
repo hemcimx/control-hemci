@@ -206,6 +206,7 @@
     });
   }
   function memberName(id) {
+    if (id === "ambos") return "Ambos";
     var m = state.team.find(function(x){ return x.id === id; });
     return m ? m.name : "Sin asignar";
   }
@@ -687,7 +688,7 @@
         '</div>'
       );
     }
-    var myTasks = state.tasks.filter(function(t){ return t.assignee === myId && (t.status === "pendiente" || t.status === "en_proceso"); });
+    var myTasks = state.tasks.filter(function(t){ return (t.assignee === myId || t.assignee === "ambos") && (t.status === "pendiente" || t.status === "en_proceso"); });
     myTasks.sort(function(a, b){
       var pa = PRIORITY_ORDER[a.priority] != null ? PRIORITY_ORDER[a.priority] : 3;
       var pb = PRIORITY_ORDER[b.priority] != null ? PRIORITY_ORDER[b.priority] : 3;
@@ -883,7 +884,7 @@
       '<form class="card form-grid" id="task-form">' +
         '<label class="span-2">Tarea<input type="text" name="title" placeholder="Ej. Cotizar proveedor nuevo" required /></label>' +
         '<label>Proyecto (opcional)<input type="text" name="project" placeholder="Ej. Apertura sucursal" /></label>' +
-        '<label>Asignar a<select name="assignee">' + teamOptions + '</select></label>' +
+        '<label>Asignar a<select name="assignee">' + teamOptions + '<option value="ambos">Ambos</option></select></label>' +
         '<label>Prioridad<select name="priority">' + priorityOptions + '</select></label>' +
         '<label>Fecha límite<input type="date" name="dueDate" /></label>' +
         '<label class="span-2">Notas<input type="text" name="description" placeholder="Detalles de la tarea" /></label>' +
@@ -908,7 +909,7 @@
       assignBlock =
         '<div class="confirm-panel" style="display:flex; margin-top:8px;">' +
           '<span class="hint" style="margin:0;">Asignar a:</span>' +
-          '<select id="reassign-' + t.id + '"><option value="">Sin asignar</option>' + teamOpts + '</select>' +
+          '<select id="reassign-' + t.id + '"><option value="">Sin asignar</option>' + teamOpts + '<option value="ambos"' + (t.assignee === "ambos" ? " selected" : "") + '>Ambos</option></select>' +
           '<button type="button" class="btn-secondary" style="margin-top:0;" data-reassign-task="' + t.id + '">Guardar</button>' +
         '</div>';
     }
@@ -961,6 +962,10 @@
         var v = Number(e.target.value);
         var task = state.tasks.find(function(t){ return t.id === id; });
         if (v >= 100) {
+          if (task && task.assignee === "ambos") {
+            updateTask(id, { progress: v, status: "hecho", awaitingApproval: false });
+            return;
+          }
           var eligible = task ? state.team.filter(function(m){ return m.id !== task.assignee && m.pinHash; }) : [];
           if (eligible.length === 0) {
             updateTask(id, { progress: v, status: "hecho", awaitingApproval: false });
