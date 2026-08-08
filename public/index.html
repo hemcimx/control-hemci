@@ -174,6 +174,7 @@
     loading: true,
     notice: null,
     gastosMonthFilter: new Date().toISOString().slice(0,7),
+    historialMonthFilter: "",
     tareasShowCancelled: false
   };
   if (window.matchMedia && window.matchMedia("(max-width: 760px)").matches) {
@@ -604,6 +605,7 @@
     if (state.tab === "tareas") bindTareasEvents();
     if (state.tab === "soporte") bindTicketsEvents();
     if (state.tab === "equipo") bindEquipoEvents();
+    if (state.tab === "historial") bindHistorialEvents();
   }
 
   // ---------- Resumen ----------
@@ -1112,19 +1114,108 @@
   }
 
   // ---------- Historial ----------
+  function monthKeyMX(ts) {
+    var parts = new Intl.DateTimeFormat("en-US", { timeZone: "America/Mexico_City", year: "numeric", month: "2-digit" }).formatToParts(new Date(ts));
+    var year = parts.find(function(p){ return p.type === "year"; }).value;
+    var month = parts.find(function(p){ return p.type === "month"; }).value;
+    return year + "-" + month;
+  }
   function historialHTML() {
-    if (state.auditLog.length === 0) {
-      return '<h2 class="panel-title">Historial</h2><p class="empty">Todavía no hay actividad registrada.</p>';
-    }
-    var rows = state.auditLog.map(function(entry){
+    var monthFilter = state.historialMonthFilter || "";
+    var list = monthFilter
+      ? state.auditLog.filter(function(e){ return monthKeyMX(e.ts) === monthFilter; })
+      : state.auditLog.slice(0, 20);
+    var rows = list.map(function(entry){
       var when = formatDateTimeMX(entry.ts);
       return '<div class="feed-item"><span class="mono" style="color:var(--text-muted);">' + when + '</span> — <strong>' + escapeHtml(entry.actor) + '</strong>: ' + escapeHtml(entry.text) + '</div>';
     }).join("");
+
+    var clearPanel = "";
+    if (state.showClearHistoryPanel) {
+      var confirmed = state.historialClearConfirms || [];
+      var withPin = state.team.filter(function(m){ return m.pinHash; });
+      var pending = withPin.filter(function(m){ return confirmed.indexOf(m.id) === -1; });
+      var progressText = confirmed.length > 0 ? confirmed.map(memberName).join(", ") : "nadie todavía";
+      if (withPin.length === 0) {
+        clearPanel = '<div class="card"><p class="hint" style="color:var(--stamp-red);">Nadie tiene clave de 4 dígitos configurada todavía (ve a Equipo) — no se puede confirmar el borrado con seguridad.</p><button type="button" class="link-btn" id="clear-history-cancel-btn">Cerrar</button></div>';
+      } else {
+        var options = pending.map(function(m){ return '<option value="' + m.id + '">' + escapeHtml(m.name) + '</option>'; }).join("");
+        clearPanel =
+          '<div class="card">' +
+            '<p class="hint">Para borrar el historial hacen falta las claves de <strong>ambos</strong>. Confirmado hasta ahora: ' + escapeHtml(progressText) + '.</p>' +
+            '<div class="confirm-panel" style="display:flex;">' +
+              '<select id="clear-history-member">' + options + '</select>' +
+              '<input type="password" inputmode="numeric" maxlength="4" placeholder="Clave" id="clear-history-pin" style="max-width:90px;" />' +
+              '<button type="button" class="btn-primary" style="margin-top:0;" id="clear-history-confirm-btn">Confirmar</button>' +
+              '<button type="button" class="link-btn" id="clear-history-cancel-btn">Cancelar</button>' +
+              '<span class="confirm-error" id="clear-history-error"></span>' +
+            '</div>' +
+          '</div>';
+      }
+    }
+
     return (
       '<h2 class="panel-title">Historial</h2>' +
-      '<p class="hint">Registro de quién hizo qué. Se guardan los últimos 200 movimientos.</p>' +
-      '<div class="card">' + rows + '</div>'
+      '<div class="list-header">' +
+        '<input type="month" id="historial-month-filter" value="' + monthFilter + '" />' +
+        (monthFilter
+          ? '<button type="button" class="link-btn" id="historial-clear-filter">Ver últimos 20</button>'
+          : '<span class="hint" style="margin:0;">Mostrando los últimos 20. Elige un mes para ver todo ese periodo.</span>') +
+        '<button type="button" class="btn-secondary" style="margin-top:0;" id="clear-history-btn">Borrar historial</button>' +
+      '</div>' +
+      clearPanel +
+      (list.length === 0 ? '<p class="empty">' + (monthFilter ? "No hay actividad en ese mes." : "Todavía no hay actividad registrada.") + '</p>' : '<div class="card">' + rows + '</div>')
     );
+  }
+  function bindHistorialEvents() {
+    var monthInput = document.getElementById("historial-month-filter");
+    if (monthInput) monthInput.addEventListener("change", function(e){
+      state.historialMonthFilter = e.target.value;
+      renderTabContent();
+    });
+    var clearFilterBtn = document.getElementById("historial-clear-filter");
+    if (clearFilterBtn) clearFilterBtn.addEventListener("click", function(){
+      state.historialMonthFilter = "";
+      renderTabContent();
+    });
+    var clearHistoryBtn = document.getElementById("clear-history-btn");
+    if (clearHistoryBtn) clearHistoryBtn.addEventListener("click", function(){
+      state.showClearHistoryPanel = true;
+      state.historialClearConfirms = [];
+      renderTabContent();
+    });
+    var cancelBtn = document.getElementById("clear-history-cancel-btn");
+    if (cancelBtn) cancelBtn.addEventListener("click", function(){
+      state.showClearHistoryPanel = false;
+      state.historialClearConfirms = [];
+      renderTabContent();
+    });
+    var confirmBtn = document.getElementById("clear-history-confirm-btn");
+    if (confirmBtn) confirmBtn.addEventListener("click", async function(){
+      var sel = document.getElementById("clear-history-member");
+      var pinInput = document.getElementById("clear-history-pin");
+      var errorSlot = document.getElementById("clear-history-error");
+      errorSlot.textContent = "";
+      var member = state.team.find(function(m){ return m.id === sel.value; });
+      var pin = pinInput.value.trim();
+      if (!member || !member.pinHash) { errorSlot.textContent = "Elige quién confirma."; return; }
+      if (!/^\d{4}$/.test(pin)) { errorSlot.textContent = "Clave de 4 dígitos."; return; }
+      var hash = await sha256Hex(pin);
+      if (hash !== member.pinHash) { errorSlot.textContent = "Clave incorrecta."; return; }
+      state.historialClearConfirms = (state.historialClearConfirms || []).concat([member.id]);
+      var withPin = state.team.filter(function(m){ return m.pinHash; });
+      var allConfirmed = withPin.every(function(m){ return state.historialClearConfirms.indexOf(m.id) !== -1; });
+      if (allConfirmed) {
+        var names = state.historialClearConfirms.map(memberName).join(" y ");
+        state.auditLog = [{ ts: Date.now(), actor: names, text: "Borraron el historial anterior (confirmado por ambos)" }];
+        await saveKey("auditlog", state.auditLog);
+        state.showClearHistoryPanel = false;
+        state.historialClearConfirms = [];
+        state.historialMonthFilter = "";
+        flash("Historial borrado.");
+      }
+      renderTabContent();
+    });
   }
 
   // ---------- Soporte IT ----------
