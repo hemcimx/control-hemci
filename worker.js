@@ -13,6 +13,35 @@ function jsonResponse(obj, status, extraHeaders) {
 function jsonError(msg, status) {
   return jsonResponse({ error: msg }, status || 400);
 }
+function escapeHtmlServer(s) {
+  return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
+    return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+  });
+}
+async function sendTicketNotificationEmail(env, ticket) {
+  try {
+    if (!env.EMAIL || !env.HEMCI_KV) return;
+    var raw = await env.HEMCI_KV.get("notify_emails");
+    var emails = raw ? JSON.parse(raw) : [];
+    if (!emails || emails.length === 0) return;
+    var subject = "Nuevo ticket " + (ticket.folio || "") + " (" + (ticket.urgency || "Media") + ") — HEMCI Soporte";
+    var html =
+      "<p>Tienes un folio de HEMCI: <strong>" + escapeHtmlServer(ticket.folio) + "</strong></p>" +
+      "<p><strong>Equipo:</strong> " + escapeHtmlServer(ticket.device) + "<br>" +
+      "<strong>Área:</strong> " + escapeHtmlServer(ticket.area || "—") + "<br>" +
+      "<strong>Tipo de falla:</strong> " + escapeHtmlServer(ticket.failureType) + "<br>" +
+      "<strong>Urgencia:</strong> " + escapeHtmlServer(ticket.urgency) + "<br>" +
+      "<strong>Reportó:</strong> " + escapeHtmlServer(ticket.reporterName) + "</p>" +
+      "<p>" + escapeHtmlServer(ticket.description) + "</p>";
+    var text = "Tienes un folio de HEMCI: " + ticket.folio + ". Equipo: " + ticket.device +
+      ". Urgencia: " + ticket.urgency + ". Reportó: " + ticket.reporterName + ". " + ticket.description;
+    await env.EMAIL.send({
+      to: emails.map(function (e) { return { email: e }; }),
+      from: { email: "alertas@hemci.mx", name: "HEMCI Soporte" },
+      subject: subject, html: html, text: text
+    });
+  } catch (e) { /* nunca truena la creación del ticket por un correo fallido */ }
+}
 
 // ---------- base64url ----------
 function b64urlEncode(bytes) {
@@ -255,15 +284,53 @@ export default {
         var folio = await nextTicketFolio(env);
         var t = {
           id: uidServer(), folio: folio, reporterName: reporterName, device: device,
+          area: String(body.area || "").trim().slice(0, 100),
           failureType: String(body.failureType || "Otro").slice(0, 50),
           urgency: String(body.urgency || "Media").slice(0, 20),
-          description: desc, status: "abierto", resolution: "", assignedTo: "", createdAt: Date.now()
+          description: desc, status: "abierto", resolution: "", assignedTo: "",
+          notes: [], hasPhoto: false, createdAt: Date.now()
         };
         tickets = [t].concat(tickets);
         await env.HEMCI_KV.put("tickets", JSON.stringify(tickets));
-        return jsonResponse({ ok: true, folio: folio });
+        await sendTicketNotificationEmail(env, t);
+        return jsonResponse({ ok: true, folio: folio, id: t.id });
       }
       return jsonError("Tipo de reporte inválido.", 400);
+    }
+
+    // ---- Adjuntar foto a un ticket ya creado (requiere el mismo acceso que crear el reporte) ----
+    if (innerPath === "/api/public/ticket-photo" && request.method === "POST") {
+      if (!(await requireReportAccess(request, env))) return jsonError("No autorizado.", 401);
+      if (!env.HEMCI_KV) return jsonError("KV no configurado.", 500);
+      var tpBody; try { tpBody = await request.json(); } catch (e) { return jsonError("Solicitud inválida.", 400); }
+      var ticketId = String(tpBody.ticketId || "");
+      var photoDataUrl = String(tpBody.photo || "");
+      if (!ticketId || !photoDataUrl) return jsonError("Faltan datos.", 400);
+      var ticketsRaw2 = await env.HEMCI_KV.get("tickets");
+      var ticketsList = ticketsRaw2 ? JSON.parse(ticketsRaw2) : [];
+      var idx6 = ticketsList.findIndex(function (t) { return t.id === ticketId; });
+      if (idx6 === -1) return jsonError("Ticket no encontrado.", 404);
+      await env.HEMCI_KV.put("ticket-photo:" + ticketId, photoDataUrl);
+      ticketsList[idx6] = Object.assign({}, ticketsList[idx6], { hasPhoto: true });
+      await env.HEMCI_KV.put("tickets", JSON.stringify(ticketsList));
+      return jsonResponse({ ok: true });
+    }
+
+    // ---- Consulta pública de folio, sin necesidad de cuenta ----
+    if (innerPath === "/api/public/ticket-status" && request.method === "GET") {
+      if (!env.HEMCI_KV) return jsonError("KV no configurado.", 500);
+      var folioParam = url.searchParams.get("folio");
+      if (!folioParam) return jsonError("Falta el folio.", 400);
+      var ticketsRaw3 = await env.HEMCI_KV.get("tickets");
+      var ticketsList2 = ticketsRaw3 ? JSON.parse(ticketsRaw3) : [];
+      var found = ticketsList2.find(function (t) { return String(t.folio || "").toLowerCase() === folioParam.trim().toLowerCase(); });
+      if (!found) return jsonError("No se encontró ese folio.", 404);
+      return jsonResponse({
+        folio: found.folio, status: found.status, device: found.device, area: found.area || "",
+        failureType: found.failureType, createdAt: found.createdAt,
+        resolution: found.status === "resuelto" ? found.resolution : null,
+        resolvedAt: found.resolvedAt || null
+      });
     }
 
     // ---- Endpoint público: solo nombres del equipo (para el formulario público) ----
@@ -369,6 +436,24 @@ export default {
       var raRaw = await env.HEMCI_KV.get("report_access_creds");
       var raCurrent = raRaw ? JSON.parse(raRaw) : null;
       return jsonResponse({ username: (raCurrent && raCurrent.username) ? raCurrent.username : "hemci", currentPassword: currentMonthPassword() });
+    }
+
+    if (innerPath === "/api/auth/notify-emails" && request.method === "GET") {
+      var session6 = await requireSession(request, env);
+      if (!session6) return jsonError("No autenticado.", 401);
+      if (!env.HEMCI_KV) return jsonError("KV no configurado.", 500);
+      var neRaw = await env.HEMCI_KV.get("notify_emails");
+      return jsonResponse({ emails: neRaw ? JSON.parse(neRaw) : [], emailConfigured: !!env.EMAIL });
+    }
+    if (innerPath === "/api/auth/notify-emails" && request.method === "POST") {
+      var session7 = await requireSession(request, env);
+      if (!session7) return jsonError("No autenticado.", 401);
+      if (!env.HEMCI_KV) return jsonError("KV no configurado.", 500);
+      var neBody; try { neBody = await request.json(); } catch (e) { return jsonError("Solicitud inválida.", 400); }
+      var emailList = Array.isArray(neBody.emails) ? neBody.emails : [];
+      emailList = emailList.map(function (e) { return String(e).trim(); }).filter(function (e) { return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e); }).slice(0, 20);
+      await env.HEMCI_KV.put("notify_emails", JSON.stringify(emailList));
+      return jsonResponse({ ok: true, emails: emailList });
     }
 
     // ---- API general de datos: ahora requiere sesión válida ----

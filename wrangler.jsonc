@@ -9,5 +9,8 @@
   },
   "kv_namespaces": [
     { "binding": "HEMCI_KV", "id": "3b055003bacc48f7804c96fbdaad5f3e" }
+  ],
+  "send_email": [
+    { "name": "EMAIL" }
   ]
 }

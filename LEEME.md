@@ -1,44 +1,52 @@
-# Bitácora de negocio — control de gastos, tareas y avances
+# Bitácora de negocio — versión Worker (Cloudflare)
 
-## Qué contiene esta carpeta
-- `index.html` — la app completa (no necesita build ni instalar nada).
-- `functions/api/data/[key].js` — la función de Cloudflare que guarda y lee los datos.
+Cloudflare cambió su flujo: al conectar un repo de GitHub ahora crea un **Worker**
+(no un proyecto clásico de "Pages"). Estos archivos están armados para ese tipo
+de proyecto.
 
-## Pasos para publicarla en tu proyecto de Cloudflare Pages (hemci)
+## Qué contiene
+- `public/index.html` — la app completa.
+- `worker.js` — atiende `/api/data/...` (guarda y lee de la base de datos) y
+  sirve `index.html` para todo lo demás.
+- `wrangler.jsonc` — le dice a Cloudflare cómo desplegar el Worker.
 
-### 1. Crear el namespace de KV (la base de datos)
-1. Entra a tu dashboard de Cloudflare: https://dash.cloudflare.com
-2. En el menú lateral busca **Storage & Databases > KV** (o "Workers KV").
-3. Click en **Create namespace**. Ponle un nombre, por ejemplo `hemci-control`.
-4. Guarda.
+## Pasos
 
-### 2. Conectar el KV a tu proyecto Pages (hemci)
-1. Ve a **Workers & Pages** y entra a tu proyecto `hemci`.
-2. Ve a **Settings > Bindings > Add > KV namespace**.
-3. En **Variable name** escribe exactamente: `HEMCI_KV`
-4. En **KV namespace** selecciona el que creaste (`hemci-control`).
-5. Guarda.
+### 1. Reemplaza los archivos en tu repo de GitHub
+En tu repositorio `control-hemci`, borra `functions/` e `index.html` si ya los
+habías subido, y sube en su lugar estos tres:
+- `wrangler.jsonc`
+- `worker.js`
+- `public/index.html` (respetando la carpeta `public/`)
 
-### 3. Subir los archivos
-Depende de cómo ya subes tu sitio:
+### 2. Crea el namespace de KV (la base de datos)
+1. En el dashboard de Cloudflare, ve a **Storage & Databases > KV**.
+2. Click en **Create namespace**. Nómbralo, por ejemplo `hemci-control`.
+3. Cópiate el **ID** que te muestra (una cadena larga tipo `123456789abcdef...`).
 
-**Si tu proyecto está conectado a un repositorio (GitHub/GitLab):**
-Copia estos archivos dentro de tu repo del sitio, respetando la carpeta `functions/` en la raíz del proyecto (al mismo nivel que `index.html`), y sube los cambios (`git push`). Cloudflare desplegará automáticamente.
+### 3. Pon ese ID en wrangler.jsonc
+Abre `wrangler.jsonc` (puedes editarlo directo en GitHub, con el lápiz de editar
+archivo) y reemplaza `PON_AQUI_EL_ID_DE_TU_NAMESPACE` con el ID que copiaste.
+Guarda el cambio (commit).
 
-Si quieres tener esta app en una sección aparte de tu sitio (por ejemplo `hemci.mx/control`), pon estos archivos dentro de una carpeta `control/` en tu repo, y ajusta la ruta de la función a `functions/control/api/data/[key].js` y las llamadas `fetch` en `index.html` de `/api/data/` a `/control/api/data/`.
+### 4. Deja que Cloudflare despliegue
+Con el commit del paso anterior, Cloudflare va a volver a desplegar el Worker
+automáticamente (esto es justo lo automático que buscabas). Ve a la pestaña
+**Deployments** de tu proyecto para ver el progreso.
 
-**Si subes archivos directo (arrastrar y soltar / Wrangler CLI):**
-Sube la carpeta completa (con `index.html` y `functions/` incluidos) desde la pestaña de despliegues de tu proyecto, o usa:
-```
-npx wrangler pages deploy . --project-name=hemci
-```
+### 5. Prueba
+Abre la URL que te da Cloudflare (algo como `control-hemci.<tu-cuenta>.workers.dev`).
+Registra un gasto o una tarea, y confirma que sigue ahí si recargas la página
+o la abres desde otro dispositivo.
 
-### 4. Volver a desplegar
-Después de agregar el binding de KV, vuelve a desplegar el proyecto (un nuevo `git push`, o un nuevo deploy manual) para que la función pueda ver la variable `HEMCI_KV`.
-
-### 5. Probar
-Abre tu página. Debe cargar la Bitácora y, si registras un gasto o una tarea desde tu celular, tu socio debe verlo al recargar la página desde el suyo — los datos viven en la nube de Cloudflare, no en el navegador.
+### 6. (Opcional) Dominio propio
+En el proyecto, busca **Settings > Domains & Routes > Add**, y escribe algo como
+`control.hemci.mx`. Como `hemci.mx` ya está en tu cuenta de Cloudflare, el DNS
+se configura solo.
 
 ## Notas
-- No hay contraseña ni login: cualquiera con el link de la página puede ver y editar los datos. Si quieres protegerlo, puedes activar **Cloudflare Access** sobre esa ruta desde el dashboard (Zero Trust > Access).
-- Los datos se guardan en 4 llaves dentro del KV: `team`, `expenses`, `tasks`, `settings`. Puedes verlas y editarlas manualmente desde el dashboard de KV si necesitas corregir algo a mano.
+- No hay contraseña: cualquiera con el link puede ver y editar los datos. Si
+  quieres protegerlo, revisa **Zero Trust > Access** en el dashboard.
+- Los datos viven en 4 llaves dentro del KV: `team`, `expenses`, `tasks`,
+  `settings`. Puedes verlas desde el dashboard de KV si necesitas corregir algo
+  a mano.
