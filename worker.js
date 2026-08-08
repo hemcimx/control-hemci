@@ -319,6 +319,7 @@ export default {
 
     // ---- Consulta pública de folio, sin necesidad de cuenta ----
     if (innerPath === "/api/public/ticket-status" && request.method === "GET") {
+      if (!(await requireReportAccess(request, env))) return jsonError("No autorizado.", 401);
       if (!env.HEMCI_KV) return jsonError("KV no configurado.", 500);
       var folioParam = url.searchParams.get("folio");
       if (!folioParam) return jsonError("Falta el folio.", 400);
@@ -484,6 +485,18 @@ export default {
 
       if (request.method === "GET") {
         var value = await env.HEMCI_KV.get(key);
+        if (key === "team" && value) {
+          var teamData;
+          try { teamData = JSON.parse(value); } catch (e) { teamData = null; }
+          if (Array.isArray(teamData)) {
+            var stripped = teamData.map(function (m) {
+              var clean = Object.assign({}, m);
+              delete clean.passwordHash;
+              return clean;
+            });
+            return jsonResponse(stripped);
+          }
+        }
         return new Response(value === null ? "null" : value, { headers: { "content-type": "application/json" } });
       }
       if (request.method === "POST") {
