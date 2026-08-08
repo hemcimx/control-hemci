@@ -1439,11 +1439,21 @@
           '<button type="button" class="btn-secondary" id="save-notify-emails-btn">Guardar correos</button>' +
         '</div>' +
       '</div>';
+    var whatsappCard =
+      '<div class="card">' +
+        '<h3 class="card-title">WhatsApp de soporte</h3>' +
+        '<p class="hint">Cuando alguien manda un reporte de falla técnica, le aparece un botón para avisarles por WhatsApp con un mensaje ya escrito (folio, equipo, urgencia). Pon el número con código de país, sin espacios ni signos — ej. 523321234567.</p>' +
+        '<div class="form-grid">' +
+          '<label class="span-2">Número de WhatsApp<input type="text" id="support-whatsapp-input" placeholder="523321234567" /></label>' +
+          '<button type="button" class="btn-secondary" id="save-support-whatsapp-btn">Guardar número</button>' +
+        '</div>' +
+      '</div>';
     return (
       '<h2 class="panel-title">Equipo</h2>' +
       accessCard +
       reportAccessCard +
       notifyCard +
+      whatsappCard +
       '<div class="card">' +
         '<p class="hint">Estos nombres se usan para asignar tareas y para registrar quién paga cada gasto. Los datos se comparten entre quienes visiten esta página. Cada integrante puede poner su propia clave de 4 dígitos — se usa para confirmar gastos y aportaciones, como firma de autorización. Para cambiar una clave ya existente hace falta escribir la clave actual.</p>' +
         '<div id="member-rows">' + rows + '</div>' +
@@ -1481,6 +1491,34 @@
         if (res.ok && data.ok) {
           flash("Correos de aviso actualizados.");
           logActivity((state.authName || "Alguien") + " actualizó los correos de aviso de tickets");
+        } else if (res.status === 401 && data.error === "No autenticado.") {
+          handleSessionExpired();
+        } else {
+          flash(data.error || "No se pudo guardar.", true);
+        }
+      } catch (e) { flash("No se pudo conectar.", true); }
+    });
+    (async function(){
+      var waInput = document.getElementById("support-whatsapp-input");
+      try {
+        var res = await fetch(AUTH_BASE + "support-whatsapp", { credentials: "same-origin" });
+        var data = await res.json();
+        if (waInput) waInput.value = data.number || "";
+      } catch (e) {}
+    })();
+    var saveWaBtn = document.getElementById("save-support-whatsapp-btn");
+    if (saveWaBtn) saveWaBtn.addEventListener("click", async function(){
+      var number = document.getElementById("support-whatsapp-input").value.trim();
+      try {
+        var res = await fetch(AUTH_BASE + "support-whatsapp", {
+          method: "POST", credentials: "same-origin",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ number: number })
+        });
+        var data = await res.json().catch(function(){ return {}; });
+        if (res.ok && data.ok) {
+          flash("Número de WhatsApp guardado.");
+          logActivity((state.authName || "Alguien") + " actualizó el número de WhatsApp de soporte");
         } else if (res.status === 401 && data.error === "No autenticado.") {
           handleSessionExpired();
         } else {
@@ -1648,13 +1686,14 @@
       } catch (err) { renderReportGate("No se pudo conectar. Revisa tu conexión."); }
     });
   }
-  function renderReportForm(team, successMsg) {
+  function renderReportForm(team, successMsg, whatsappUrl) {
     var app = document.getElementById("app");
     app.innerHTML =
       '<div class="report-page"><div class="report-card">' +
         '<span class="brand-mark" style="font-size:32px;">§</span>' +
         '<h1 class="panel-title">Reportar algo al equipo</h1>' +
         (successMsg ? '<div class="report-success">' + successMsg + '</div>' : '') +
+        (whatsappUrl ? '<a href="' + whatsappUrl + '" target="_blank" rel="noopener" class="btn-primary" style="display:block; text-align:center; text-decoration:none; margin-bottom:16px;">Avisar por WhatsApp</a>' : '') +
         '<form id="report-form">' +
           '<label>Tipo de reporte' +
             '<select name="kind" id="report-kind">' +
@@ -1747,7 +1786,17 @@
       var msg = (data && data.folio)
         ? ("¡Gracias! Tu reporte fue enviado.<br>Tu folio es <strong>" + escapeHtml(data.folio) + "</strong> — guárdalo para consultar el estado después.")
         : "¡Gracias! Tu reporte fue enviado.";
-      renderReportForm(team, msg);
+      var whatsappUrl = null;
+      if (kind === "falla" && data && data.whatsapp) {
+        var waText = "Nuevo reporte HEMCI\nFolio: " + (data.folio || "") +
+          "\nEquipo: " + (payload.device || "") +
+          (payload.area ? ("\nÁrea: " + payload.area) : "") +
+          "\nUrgencia: " + (payload.urgency || "") +
+          "\nReportó: " + reporterName +
+          "\nProblema: " + (payload.failureDescription || "");
+        whatsappUrl = "https://wa.me/" + data.whatsapp + "?text=" + encodeURIComponent(waText);
+      }
+      renderReportForm(team, msg, whatsappUrl);
     });
   }
 

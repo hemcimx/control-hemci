@@ -293,7 +293,8 @@ export default {
         tickets = [t].concat(tickets);
         await env.HEMCI_KV.put("tickets", JSON.stringify(tickets));
         await sendTicketNotificationEmail(env, t);
-        return jsonResponse({ ok: true, folio: folio, id: t.id });
+        var waNumber = await env.HEMCI_KV.get("support_whatsapp");
+        return jsonResponse({ ok: true, folio: folio, id: t.id, whatsapp: waNumber || "" });
       }
       return jsonError("Tipo de reporte inválido.", 400);
     }
@@ -454,6 +455,23 @@ export default {
       emailList = emailList.map(function (e) { return String(e).trim(); }).filter(function (e) { return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e); }).slice(0, 20);
       await env.HEMCI_KV.put("notify_emails", JSON.stringify(emailList));
       return jsonResponse({ ok: true, emails: emailList });
+    }
+
+    if (innerPath === "/api/auth/support-whatsapp" && request.method === "GET") {
+      var sessionWa = await requireSession(request, env);
+      if (!sessionWa) return jsonError("No autenticado.", 401);
+      if (!env.HEMCI_KV) return jsonError("KV no configurado.", 500);
+      var waRaw = await env.HEMCI_KV.get("support_whatsapp");
+      return jsonResponse({ number: waRaw || "" });
+    }
+    if (innerPath === "/api/auth/support-whatsapp" && request.method === "POST") {
+      var sessionWa2 = await requireSession(request, env);
+      if (!sessionWa2) return jsonError("No autenticado.", 401);
+      if (!env.HEMCI_KV) return jsonError("KV no configurado.", 500);
+      var waBody; try { waBody = await request.json(); } catch (e) { return jsonError("Solicitud inválida.", 400); }
+      var digits = String(waBody.number || "").replace(/\D/g, "");
+      await env.HEMCI_KV.put("support_whatsapp", digits);
+      return jsonResponse({ ok: true, number: digits });
     }
 
     // ---- API general de datos: ahora requiere sesión válida ----
