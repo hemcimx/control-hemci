@@ -508,7 +508,10 @@ export default {
           return {
             descripcion: String(it.descripcion || "").slice(0, 300),
             cantidad: Number(it.cantidad) || 0,
-            precioUnit: Number(it.precioUnit) || 0
+            precioUnit: Number(it.precioUnit) || 0,
+            subitems: Array.isArray(it.subitems)
+              ? it.subitems.slice(0, 30).map(function (s) { return String(s || "").slice(0, 300); }).filter(function (s) { return s.trim(); })
+              : []
           };
         }) : [],
         ivaRate: Number(nbody.ivaRate) || 0,

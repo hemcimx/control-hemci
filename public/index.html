@@ -1524,7 +1524,7 @@
     var rate = (state.settings && state.settings.ivaRate != null) ? state.settings.ivaRate : 16;
     return {
       cliente: "", contacto: "", area: "", ticketFolio: "", fecha: todayISO(),
-      items: [{ descripcion: "", cantidad: 1, precioUnit: 0 }],
+      items: [{ descripcion: "", cantidad: 1, precioUnit: 0, subitems: [] }],
       ivaRate: rate, preciosIncluyenIva: false, trabajo: ""
     };
   }
@@ -1542,12 +1542,15 @@
     d.ivaRate = Number(g("nota-iva")) || 0;
     var chk = document.getElementById("nota-incluye-iva");
     d.preciosIncluyenIva = chk ? chk.checked : false;
-    var rows = document.querySelectorAll("[data-nota-row]");
-    d.items = [].map.call(rows, function(row){
+    var blocks = document.querySelectorAll("[data-nota-block]");
+    d.items = [].map.call(blocks, function(b){
+      var subs = [].map.call(b.querySelectorAll('[data-f="sub"]'), function(s){ return s.value; })
+        .filter(function(t){ return t.trim(); });
       return {
-        descripcion: row.querySelector('[data-f="desc"]').value,
-        cantidad: Number(row.querySelector('[data-f="qty"]').value) || 0,
-        precioUnit: Number(row.querySelector('[data-f="unit"]').value) || 0
+        descripcion: b.querySelector('[data-f="desc"]').value,
+        cantidad: Number(b.querySelector('[data-f="qty"]').value) || 0,
+        precioUnit: Number(b.querySelector('[data-f="unit"]').value) || 0,
+        subitems: subs
       };
     });
   }
@@ -1578,13 +1581,33 @@
     }).join("");
 
     var rowsHTML = d.items.map(function(it, i){
-      return '<tr data-nota-row>' +
-        '<td data-label="Cant."><input type="number" min="0" step="1" data-f="qty" value="' + escapeHtml(String(it.cantidad)) + '" /></td>' +
-        '<td data-label="Descripción"><input type="text" data-f="desc" value="' + escapeHtml(it.descripcion) + '" placeholder="Ej. Reemplazo de disco por SSD" /></td>' +
-        '<td data-label="P. unitario"><input type="number" min="0" step="0.01" data-f="unit" value="' + escapeHtml(String(it.precioUnit)) + '" /></td>' +
-        '<td class="mono amount" data-label="Importe" data-f="importe">' + currency(calc.lines[i] || 0) + '</td>' +
-        '<td data-label=""><button type="button" class="icon-btn" data-nota-delrow="' + i + '" aria-label="Quitar renglón">✕</button></td>' +
-      '</tr>';
+      var subs = it.subitems || [];
+      var subsHTML = subs.map(function(s, j){
+        return '<div style="display:flex; align-items:center; gap:6px; margin:3px 0;">' +
+            '<span style="color:var(--text-muted);">–</span>' +
+            '<input type="text" data-f="sub" value="' + escapeHtml(s) + '" placeholder="Detalle incluido" style="flex:1; font-size:12px; padding:4px 7px;" />' +
+            '<button type="button" class="icon-btn" data-nota-delsub="' + i + ':' + j + '" aria-label="Quitar detalle">✕</button>' +
+          '</div>';
+      }).join("");
+      var subRow =
+        '<tr data-nota-subrow><td colspan="2"></td><td colspan="4">' +
+          '<div style="padding:2px 0 4px;">' +
+            (subs.length ? '<div style="font-size:11px; color:var(--ink-soft); margin-bottom:2px;">Incluye:</div>' + subsHTML : '') +
+            '<button type="button" class="link-btn" data-nota-addsub="' + i + '">+ agregar detalle</button>' +
+            (subs.length ? ' &nbsp;·&nbsp; <button type="button" class="link-btn" data-nota-split="' + i + '">separar en conceptos</button>' : '') +
+          '</div>' +
+        '</td></tr>';
+      return '<tbody data-nota-block>' +
+        '<tr data-nota-row>' +
+          '<td data-label=""><input type="checkbox" data-f="sel" style="width:auto;" aria-label="Seleccionar para unir" /></td>' +
+          '<td data-label="Cant."><input type="number" min="0" step="1" data-f="qty" value="' + escapeHtml(String(it.cantidad)) + '" /></td>' +
+          '<td data-label="Descripción"><input type="text" data-f="desc" value="' + escapeHtml(it.descripcion) + '" placeholder="Ej. Desarrollo y publicación de sitio web" /></td>' +
+          '<td data-label="P. unitario"><input type="number" min="0" step="0.01" data-f="unit" value="' + escapeHtml(String(it.precioUnit)) + '" /></td>' +
+          '<td class="mono amount" data-label="Importe" data-f="importe">' + currency(calc.lines[i] || 0) + '</td>' +
+          '<td data-label=""><button type="button" class="icon-btn" data-nota-delrow="' + i + '" aria-label="Quitar concepto">✕</button></td>' +
+        '</tr>' +
+        subRow +
+      '</tbody>';
     }).join("");
 
     var listHTML = state.notas.length === 0
@@ -1612,9 +1635,13 @@
       '</div>' +
       '<div class="card">' +
         '<h3 class="card-title">Conceptos</h3>' +
-        '<table><thead><tr><th style="width:64px;">Cant.</th><th>Descripción</th><th style="width:104px;">P. unitario</th><th style="width:104px;">Importe</th><th style="width:34px;"></th></tr></thead>' +
-        '<tbody>' + rowsHTML + '</tbody></table>' +
-        '<button type="button" class="btn-secondary" id="nota-addrow">+ Agregar concepto</button>' +
+        '<p class="hint" style="margin:-6px 0 10px;">Para agrupar varias partidas en un solo concepto con un precio: márcalas con la casilla y usa <strong>Unir seleccionados</strong>. Las partidas agrupadas se listan como "Incluye:" debajo del concepto.</p>' +
+        '<table><thead><tr><th style="width:26px;"></th><th style="width:56px;">Cant.</th><th>Descripción</th><th style="width:100px;">P. unitario</th><th style="width:100px;">Importe</th><th style="width:32px;"></th></tr></thead>' +
+        rowsHTML + '</table>' +
+        '<div style="display:flex; gap:10px; flex-wrap:wrap;">' +
+          '<button type="button" class="btn-secondary" id="nota-addrow">+ Agregar concepto</button>' +
+          '<button type="button" class="btn-secondary" id="nota-unir" style="display:none;">Unir seleccionados</button>' +
+        '</div>' +
         '<div style="display:flex; gap:18px; flex-wrap:wrap; align-items:center; margin-top:14px; padding-top:12px; border-top:1px dashed var(--paper-line); font-size:12px; color:var(--ink-soft);">' +
           '<label class="check-row" style="margin:0;"><input type="checkbox" id="nota-incluye-iva" ' + (d.preciosIncluyenIva ? "checked" : "") + ' /> Los precios ya incluyen IVA</label>' +
           '<label style="display:flex; align-items:center; gap:6px;">Tasa de IVA <input type="number" min="0" step="0.5" id="nota-iva" value="' + escapeHtml(String(d.ivaRate)) + '" style="width:66px;" /> %</label>' +
@@ -1635,21 +1662,85 @@
     );
   }
 
+  function newNotaItem() { return { descripcion: "", cantidad: 1, precioUnit: 0, subitems: [] }; }
+
+  function updateUnirBtn() {
+    var b = document.getElementById("nota-unir");
+    if (b) b.style.display = document.querySelectorAll('[data-f="sel"]:checked').length >= 2 ? "inline-flex" : "none";
+  }
+
   function bindNotasEvents() {
     document.getElementById("nota-addrow").addEventListener("click", function(){
       syncNotaDraftFromDOM();
-      state.notaDraft.items.push({ descripcion: "", cantidad: 1, precioUnit: 0 });
+      state.notaDraft.items.push(newNotaItem());
       renderTabContent();
     });
     document.querySelectorAll("[data-nota-delrow]").forEach(function(btn){
       btn.addEventListener("click", function(){
         syncNotaDraftFromDOM();
         state.notaDraft.items.splice(Number(btn.dataset.notaDelrow), 1);
-        if (state.notaDraft.items.length === 0) state.notaDraft.items.push({ descripcion: "", cantidad: 1, precioUnit: 0 });
+        if (state.notaDraft.items.length === 0) state.notaDraft.items.push(newNotaItem());
         renderTabContent();
       });
     });
-    document.querySelectorAll('[data-nota-row] input, #nota-iva, #nota-incluye-iva').forEach(function(el){
+    document.querySelectorAll("[data-nota-addsub]").forEach(function(btn){
+      btn.addEventListener("click", function(){
+        syncNotaDraftFromDOM();
+        var it = state.notaDraft.items[Number(btn.dataset.notaAddsub)];
+        it.subitems = (it.subitems || []).concat([""]);
+        renderTabContent();
+      });
+    });
+    document.querySelectorAll("[data-nota-delsub]").forEach(function(btn){
+      btn.addEventListener("click", function(){
+        syncNotaDraftFromDOM();
+        var parts = btn.dataset.notaDelsub.split(":");
+        var it = state.notaDraft.items[Number(parts[0])];
+        if (it && it.subitems) it.subitems.splice(Number(parts[1]), 1);
+        renderTabContent();
+      });
+    });
+    document.querySelectorAll("[data-nota-split]").forEach(function(btn){
+      btn.addEventListener("click", function(){
+        syncNotaDraftFromDOM();
+        var i = Number(btn.dataset.notaSplit);
+        var it = state.notaDraft.items[i];
+        var extra = (it.subitems || []).map(function(s){ return { descripcion: s, cantidad: 1, precioUnit: 0, subitems: [] }; });
+        it.subitems = [];
+        Array.prototype.splice.apply(state.notaDraft.items, [i + 1, 0].concat(extra));
+        renderTabContent();
+      });
+    });
+    document.querySelectorAll('[data-f="sel"]').forEach(function(el){
+      el.addEventListener("change", updateUnirBtn);
+    });
+    var unirBtn = document.getElementById("nota-unir");
+    if (unirBtn) unirBtn.addEventListener("click", function(){
+      var blocks = [].slice.call(document.querySelectorAll("[data-nota-block]"));
+      var idxs = [];
+      blocks.forEach(function(b, i){ if (b.querySelector('[data-f="sel"]').checked) idxs.push(i); });
+      if (idxs.length < 2) return;
+      syncNotaDraftFromDOM();
+      var items = state.notaDraft.items;
+      var picked = idxs.map(function(i){ return items[i]; });
+      var subitems = [];
+      picked.forEach(function(it){
+        if (it.subitems && it.subitems.length) subitems = subitems.concat(it.subitems);
+        else if (it.descripcion.trim()) subitems.push(it.descripcion.trim());
+      });
+      var sum = picked.reduce(function(s, it){ return s + (Number(it.cantidad) || 0) * (Number(it.precioUnit) || 0); }, 0);
+      var merged = { descripcion: "", cantidad: 1, precioUnit: sum, subitems: subitems };
+      var first = idxs[0];
+      var next = [];
+      items.forEach(function(it, i){
+        if (i === first) next.push(merged);
+        else if (idxs.indexOf(i) === -1) next.push(it);
+      });
+      state.notaDraft.items = next;
+      renderTabContent();
+      flash("Conceptos unidos. Ponle nombre y precio al concepto agrupado.");
+    });
+    document.querySelectorAll('[data-nota-block] input:not([data-f="sel"]), #nota-iva, #nota-incluye-iva').forEach(function(el){
       el.addEventListener(el.type === "checkbox" ? "change" : "input", refreshNotaTotals);
     });
     document.getElementById("nota-save").addEventListener("click", saveNota);
@@ -1670,7 +1761,7 @@
     syncNotaDraftFromDOM();
     var d = state.notaDraft;
     if (!d.cliente.trim()) { flash("Falta el cliente.", true); return; }
-    var items = d.items.filter(function(it){ return it.descripcion.trim() || it.precioUnit; });
+    var items = d.items.filter(function(it){ return it.descripcion.trim() || it.precioUnit || (it.subitems && it.subitems.length); });
     if (items.length === 0) { flash("Agrega al menos un concepto.", true); return; }
     var calc = notaCalc(items, d.ivaRate, d.preciosIncluyenIva);
     var payload = {
@@ -1763,19 +1854,32 @@
     doc.text("P. UNITARIO", unitX + 18, y, { align: "right" });
     doc.text("IMPORTE", pageWidth - margin, y, { align: "right" });
     y += 6;
-    doc.setFont("helvetica", "normal"); doc.setFontSize(9.5); doc.setTextColor(31, 42, 60);
+    var pageHeight = doc.internal.pageSize.getHeight();
     var calc = notaCalc(n.items || [], n.ivaRate, n.preciosIncluyenIva);
     (n.items || []).forEach(function(it, i){
+      if (y > pageHeight - 45) { doc.addPage(); y = 22; }
+      doc.setFont("helvetica", "normal"); doc.setFontSize(9.5); doc.setTextColor(31, 42, 60);
       var descLines = doc.splitTextToSize(String(it.descripcion || "—"), unitX - descX - 4);
       doc.text(String(it.cantidad || 0), margin + 1, y);
       doc.text(descLines, descX, y);
       doc.text(currency(it.precioUnit || 0), unitX + 18, y, { align: "right" });
       doc.text(currency(calc.lines[i] || 0), pageWidth - margin, y, { align: "right" });
-      y += Math.max(descLines.length, 1) * 4.6 + 3;
+      y += Math.max(descLines.length, 1) * 4.6 + 2;
+      if (it.subitems && it.subitems.length) {
+        doc.setFontSize(8.5); doc.setTextColor(107, 117, 102);
+        it.subitems.forEach(function(s){
+          var sl = doc.splitTextToSize("–  " + String(s), unitX - descX - 8);
+          doc.text(sl, descX + 3, y);
+          y += sl.length * 3.9 + 1;
+        });
+        y += 1;
+      }
+      y += 2;
       doc.setDrawColor(220, 226, 208);
       doc.line(margin, y - 2, pageWidth - margin, y - 2);
     });
 
+    if (y > pageHeight - 60) { doc.addPage(); y = 22; }
     y += 5;
     var boxX = pageWidth - margin - 60;
     function totalRow(label, value, bold) {
