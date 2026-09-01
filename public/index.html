@@ -1489,6 +1489,329 @@
     });
   }
 
+  // ---------- Notas de servicio ----------
+  // Datos del emisor que salen en el PDF. Edita estas 4 líneas con los datos reales de GALEX DIGITAL.
+  var GALEX_INFO = {
+    nombre: "GALEX DIGITAL",
+    lema: "Servicios Profesionales",
+    linea1: "Soporte y servicios de TI",
+    linea2: "Guadalajara, Jal.  ·  contacto@galexdigital.mx  ·  33 0000 0000"
+  };
+  var LOGO_GALEX_B64 = "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";
+
+  function notaCalc(items, ivaRate, incluyeIva) {
+    var lineCents = (items || []).map(function(it){
+      return Math.round((Number(it.cantidad) || 0) * (Number(it.precioUnit) || 0) * 100);
+    });
+    var rate = (Number(ivaRate) || 0) / 100;
+    var subC, ivaC, totC;
+    if (incluyeIva) {
+      totC = lineCents.reduce(function(s, c){ return s + c; }, 0);
+      subC = rate > 0 ? Math.round(totC / (1 + rate)) : totC;
+      ivaC = totC - subC;
+    } else {
+      subC = lineCents.reduce(function(s, c){ return s + c; }, 0);
+      ivaC = Math.round(subC * rate);
+      totC = subC + ivaC;
+    }
+    return {
+      lines: lineCents.map(function(c){ return c / 100; }),
+      subtotal: subC / 100, iva: ivaC / 100, total: totC / 100
+    };
+  }
+
+  function defaultNotaDraft() {
+    var rate = (state.settings && state.settings.ivaRate != null) ? state.settings.ivaRate : 16;
+    return {
+      cliente: "", contacto: "", area: "", ticketFolio: "", fecha: todayISO(),
+      items: [{ descripcion: "", cantidad: 1, precioUnit: 0 }],
+      ivaRate: rate, preciosIncluyenIva: false, trabajo: ""
+    };
+  }
+
+  function syncNotaDraftFromDOM() {
+    var d = state.notaDraft;
+    if (!d) return;
+    var g = function(id){ var el = document.getElementById(id); return el ? el.value : ""; };
+    d.cliente = g("nota-cliente");
+    d.contacto = g("nota-contacto");
+    d.area = g("nota-area");
+    d.ticketFolio = g("nota-ticket");
+    d.fecha = g("nota-fecha") || todayISO();
+    d.trabajo = g("nota-trabajo");
+    d.ivaRate = Number(g("nota-iva")) || 0;
+    var chk = document.getElementById("nota-incluye-iva");
+    d.preciosIncluyenIva = chk ? chk.checked : false;
+    var rows = document.querySelectorAll("[data-nota-row]");
+    d.items = [].map.call(rows, function(row){
+      return {
+        descripcion: row.querySelector('[data-f="desc"]').value,
+        cantidad: Number(row.querySelector('[data-f="qty"]').value) || 0,
+        precioUnit: Number(row.querySelector('[data-f="unit"]').value) || 0
+      };
+    });
+  }
+
+  function refreshNotaTotals() {
+    syncNotaDraftFromDOM();
+    var d = state.notaDraft;
+    var calc = notaCalc(d.items, d.ivaRate, d.preciosIncluyenIva);
+    var rows = document.querySelectorAll("[data-nota-row]");
+    calc.lines.forEach(function(v, i){
+      var cell = rows[i] && rows[i].querySelector('[data-f="importe"]');
+      if (cell) cell.textContent = currency(v);
+    });
+    var set = function(id, v){ var el = document.getElementById(id); if (el) el.textContent = currency(v); };
+    set("nota-subtotal", calc.subtotal);
+    set("nota-ivamonto", calc.iva);
+    set("nota-total", calc.total);
+    var lbl = document.getElementById("nota-iva-label");
+    if (lbl) lbl.textContent = "IVA (" + (Number(d.ivaRate) || 0) + "%)";
+  }
+
+  function notasHTML() {
+    if (!state.notaDraft) state.notaDraft = defaultNotaDraft();
+    var d = state.notaDraft;
+    var calc = notaCalc(d.items, d.ivaRate, d.preciosIncluyenIva);
+    var ticketOptions = state.tickets.map(function(t){
+      return '<option value="' + escapeHtml(t.folio || "") + '">' + escapeHtml((t.folio || "") + " — " + (t.device || "")) + '</option>';
+    }).join("");
+
+    var rowsHTML = d.items.map(function(it, i){
+      return '<tr data-nota-row>' +
+        '<td data-label="Cant."><input type="number" min="0" step="1" data-f="qty" value="' + escapeHtml(String(it.cantidad)) + '" /></td>' +
+        '<td data-label="Descripción"><input type="text" data-f="desc" value="' + escapeHtml(it.descripcion) + '" placeholder="Ej. Reemplazo de disco por SSD" /></td>' +
+        '<td data-label="P. unitario"><input type="number" min="0" step="0.01" data-f="unit" value="' + escapeHtml(String(it.precioUnit)) + '" /></td>' +
+        '<td class="mono amount" data-label="Importe" data-f="importe">' + currency(calc.lines[i] || 0) + '</td>' +
+        '<td data-label=""><button type="button" class="icon-btn" data-nota-delrow="' + i + '" aria-label="Quitar renglón">✕</button></td>' +
+      '</tr>';
+    }).join("");
+
+    var listHTML = state.notas.length === 0
+      ? '<p class="empty">Aún no hay notas emitidas.</p>'
+      : '<table><thead><tr><th>Folio</th><th>Fecha</th><th>Cliente</th><th>Total</th><th></th><th></th></tr></thead><tbody>' +
+        state.notas.map(function(n){
+          return '<tr>' +
+            '<td class="mono" data-label="Folio">' + escapeHtml(n.folio || "") + '</td>' +
+            '<td data-label="Fecha">' + formatDateMX(n.fecha || (new Date(n.createdAt)).toISOString().slice(0, 10)) + '</td>' +
+            '<td data-label="Cliente">' + escapeHtml(n.cliente || "—") + '</td>' +
+            '<td class="mono amount" data-label="Total">' + currency(n.total) + '</td>' +
+            '<td data-label=""><button type="button" class="link-btn" data-nota-pdf="' + escapeHtml(n.id) + '">PDF</button></td>' +
+            '<td data-label=""><button class="icon-btn" data-nota-del="' + escapeHtml(n.id) + '" aria-label="Eliminar nota">✕ Eliminar</button></td>' +
+          '</tr>';
+        }).join("") + '</tbody></table>';
+
+    return (
+      '<h2 class="panel-title">Notas de servicio</h2>' +
+      '<div class="card form-grid">' +
+        '<label class="span-2">Cliente / a quién se entrega<input type="text" id="nota-cliente" value="' + escapeHtml(d.cliente) + '" placeholder="Ej. HEMCI — Hospital de Especialidades Médicas de la Ciénega" /></label>' +
+        '<label>Contacto<input type="text" id="nota-contacto" value="' + escapeHtml(d.contacto) + '" placeholder="Nombre y teléfono" /></label>' +
+        '<label>Área / ubicación<input type="text" id="nota-area" value="' + escapeHtml(d.area) + '" placeholder="Ej. Laboratorio" /></label>' +
+        '<label>Fecha<input type="date" id="nota-fecha" value="' + escapeHtml(d.fecha || todayISO()) + '" /></label>' +
+        '<label>Folio de reporte (opcional)<input type="text" id="nota-ticket" list="nota-ticket-list" value="' + escapeHtml(d.ticketFolio) + '" placeholder="HEMCI-2026-0000" /><datalist id="nota-ticket-list">' + ticketOptions + '</datalist></label>' +
+      '</div>' +
+      '<div class="card">' +
+        '<h3 class="card-title">Conceptos</h3>' +
+        '<table><thead><tr><th style="width:64px;">Cant.</th><th>Descripción</th><th style="width:104px;">P. unitario</th><th style="width:104px;">Importe</th><th style="width:34px;"></th></tr></thead>' +
+        '<tbody>' + rowsHTML + '</tbody></table>' +
+        '<button type="button" class="btn-secondary" id="nota-addrow">+ Agregar concepto</button>' +
+        '<div style="display:flex; gap:18px; flex-wrap:wrap; align-items:center; margin-top:14px; padding-top:12px; border-top:1px dashed var(--paper-line); font-size:12px; color:var(--ink-soft);">' +
+          '<label class="check-row" style="margin:0;"><input type="checkbox" id="nota-incluye-iva" ' + (d.preciosIncluyenIva ? "checked" : "") + ' /> Los precios ya incluyen IVA</label>' +
+          '<label style="display:flex; align-items:center; gap:6px;">Tasa de IVA <input type="number" min="0" step="0.5" id="nota-iva" value="' + escapeHtml(String(d.ivaRate)) + '" style="width:66px;" /> %</label>' +
+        '</div>' +
+      '</div>' +
+      '<div class="card" style="max-width:300px; margin-left:auto;">' +
+        '<div style="display:flex; justify-content:space-between; font-size:13px; margin-bottom:6px;"><span>Subtotal</span><span class="mono" id="nota-subtotal">' + currency(calc.subtotal) + '</span></div>' +
+        '<div style="display:flex; justify-content:space-between; font-size:13px; margin-bottom:6px;"><span id="nota-iva-label">IVA (' + (Number(d.ivaRate) || 0) + '%)</span><span class="mono" id="nota-ivamonto">' + currency(calc.iva) + '</span></div>' +
+        '<div style="display:flex; justify-content:space-between; font-size:16px; font-weight:700; border-top:1px solid var(--ink-soft); padding-top:6px;"><span>Total</span><span class="mono" id="nota-total">' + currency(calc.total) + '</span></div>' +
+      '</div>' +
+      '<div class="card">' +
+        '<label style="display:block; font-size:12px; color:var(--ink-soft);">Trabajo realizado / observaciones' +
+        '<textarea id="nota-trabajo" rows="4" style="width:100%; font-family:var(--font-body); font-size:13px; padding:8px 9px; border:1px solid var(--paper-line); border-radius:6px; resize:vertical; margin-top:4px;" placeholder="Describe el trabajo que se hizo">' + escapeHtml(d.trabajo) + '</textarea></label>' +
+      '</div>' +
+      '<button type="button" class="btn-primary" id="nota-save" style="width:100%;">Guardar y descargar PDF</button>' +
+      '<h3 class="card-title" style="margin-top:22px;">Notas emitidas</h3>' +
+      '<div class="card">' + listHTML + '</div>'
+    );
+  }
+
+  function bindNotasEvents() {
+    document.getElementById("nota-addrow").addEventListener("click", function(){
+      syncNotaDraftFromDOM();
+      state.notaDraft.items.push({ descripcion: "", cantidad: 1, precioUnit: 0 });
+      renderTabContent();
+    });
+    document.querySelectorAll("[data-nota-delrow]").forEach(function(btn){
+      btn.addEventListener("click", function(){
+        syncNotaDraftFromDOM();
+        state.notaDraft.items.splice(Number(btn.dataset.notaDelrow), 1);
+        if (state.notaDraft.items.length === 0) state.notaDraft.items.push({ descripcion: "", cantidad: 1, precioUnit: 0 });
+        renderTabContent();
+      });
+    });
+    document.querySelectorAll('[data-nota-row] input, #nota-iva, #nota-incluye-iva').forEach(function(el){
+      el.addEventListener(el.type === "checkbox" ? "change" : "input", refreshNotaTotals);
+    });
+    document.getElementById("nota-save").addEventListener("click", saveNota);
+    document.querySelectorAll("[data-nota-pdf]").forEach(function(btn){
+      btn.addEventListener("click", function(){
+        var n = state.notas.find(function(x){ return x.id === btn.dataset.notaPdf; });
+        if (n) generateNotaPDF(n);
+      });
+    });
+    document.querySelectorAll("[data-nota-del]").forEach(function(btn){
+      btn.addEventListener("click", function(){
+        if (confirm("¿Eliminar esta nota? El folio no se reutiliza.")) deleteNota(btn.dataset.notaDel);
+      });
+    });
+  }
+
+  async function saveNota() {
+    syncNotaDraftFromDOM();
+    var d = state.notaDraft;
+    if (!d.cliente.trim()) { flash("Falta el cliente.", true); return; }
+    var items = d.items.filter(function(it){ return it.descripcion.trim() || it.precioUnit; });
+    if (items.length === 0) { flash("Agrega al menos un concepto.", true); return; }
+    var calc = notaCalc(items, d.ivaRate, d.preciosIncluyenIva);
+    var payload = {
+      cliente: d.cliente.trim(), contacto: d.contacto.trim(), area: d.area.trim(),
+      ticketFolio: d.ticketFolio.trim(), fecha: d.fecha || todayISO(),
+      items: items, ivaRate: Number(d.ivaRate) || 0, preciosIncluyenIva: d.preciosIncluyenIva,
+      subtotal: calc.subtotal, iva: calc.iva, total: calc.total, trabajo: d.trabajo.trim()
+    };
+    var btn = document.getElementById("nota-save");
+    if (btn) { btn.disabled = true; btn.textContent = "Guardando…"; }
+    try {
+      var res = await fetch("/betoalex/api/notas", {
+        method: "POST", credentials: "same-origin",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+      if (res.status === 401) { handleSessionExpired(); return; }
+      var data = await res.json().catch(function(){ return {}; });
+      if (!res.ok || !data.ok) { flash(data.error || "No se pudo guardar la nota.", true); return; }
+      state.notas = [data.nota].concat(state.notas);
+      state.notaDraft = defaultNotaDraft();
+      flash("Nota " + data.nota.folio + " guardada.");
+      logActivity("Nota de servicio " + data.nota.folio + " emitida para " + data.nota.cliente + " (" + currency(data.nota.total) + ")");
+      renderTabContent();
+      generateNotaPDF(data.nota);
+    } catch (e) {
+      flash("No se pudo conectar.", true);
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = "Guardar y descargar PDF"; }
+    }
+  }
+
+  async function deleteNota(id) {
+    var removed = state.notas.find(function(n){ return n.id === id; });
+    state.notas = state.notas.filter(function(n){ return n.id !== id; });
+    await saveKey("notas", state.notas);
+    if (removed) logActivity("Nota de servicio " + (removed.folio || "") + " eliminada");
+    renderTabContent();
+  }
+
+  function generateNotaPDF(n) {
+    if (!window.jspdf || !window.jspdf.jsPDF) { flash("No se pudo cargar el generador de PDF. Revisa tu conexión e intenta de nuevo.", true); return; }
+    var doc = new window.jspdf.jsPDF({ unit: "mm", format: "letter" });
+    var pageWidth = doc.internal.pageSize.getWidth();
+    var margin = 18;
+    var y = 18;
+
+    try { doc.addImage("data:image/jpeg;base64," + LOGO_GALEX_B64, "JPEG", margin, y - 4, 22, 22); } catch (e) {}
+    var textX = margin + 28;
+    doc.setFont("helvetica", "bold"); doc.setFontSize(15); doc.setTextColor(31, 42, 60);
+    doc.text(GALEX_INFO.nombre, textX, y + 3);
+    doc.setFont("helvetica", "normal"); doc.setFontSize(8.5); doc.setTextColor(107, 71, 224);
+    doc.text(String(GALEX_INFO.lema).toUpperCase(), textX, y + 8.5);
+    doc.setTextColor(107, 117, 102);
+    doc.text(GALEX_INFO.linea1, textX, y + 13);
+    doc.text(GALEX_INFO.linea2, textX, y + 17.5);
+
+    doc.setFont("helvetica", "bold"); doc.setFontSize(13); doc.setTextColor(31, 42, 60);
+    doc.text("Nota de Servicio", pageWidth - margin, y + 2, { align: "right" });
+    doc.setFont("helvetica", "normal"); doc.setFontSize(10);
+    doc.text("Folio: " + (n.folio || "—"), pageWidth - margin, y + 8, { align: "right" });
+    doc.text("Fecha: " + formatDateMX(n.fecha || (new Date(n.createdAt)).toISOString().slice(0, 10)), pageWidth - margin, y + 13, { align: "right" });
+    if (n.ticketFolio) doc.text("Reporte: " + n.ticketFolio, pageWidth - margin, y + 18, { align: "right" });
+
+    y += 30;
+    doc.setDrawColor(198, 208, 180);
+    doc.line(margin, y, pageWidth - margin, y);
+    y += 9;
+
+    function field(label, value) {
+      doc.setFont("helvetica", "bold"); doc.setFontSize(9.5); doc.setTextColor(69, 82, 107);
+      doc.text(label, margin, y);
+      doc.setFont("helvetica", "normal"); doc.setFontSize(10); doc.setTextColor(31, 42, 60);
+      var lines = doc.splitTextToSize(String(value || "—"), pageWidth - margin * 2);
+      doc.text(lines, margin, y + 5);
+      y += 5 + (lines.length * 5) + 4;
+    }
+    field("Cliente:", n.cliente);
+    if (n.contacto) field("Contacto:", n.contacto);
+    if (n.area) field("Área / ubicación:", n.area);
+
+    y += 2;
+    var descX = margin + 16;
+    var unitX = pageWidth - margin - 58;
+    doc.setFillColor(236, 239, 225);
+    doc.rect(margin, y - 4, pageWidth - margin * 2, 7, "F");
+    doc.setFont("helvetica", "bold"); doc.setFontSize(8.5); doc.setTextColor(31, 42, 60);
+    doc.text("CANT.", margin + 1, y);
+    doc.text("CONCEPTO", descX, y);
+    doc.text("P. UNITARIO", unitX + 18, y, { align: "right" });
+    doc.text("IMPORTE", pageWidth - margin, y, { align: "right" });
+    y += 6;
+    doc.setFont("helvetica", "normal"); doc.setFontSize(9.5); doc.setTextColor(31, 42, 60);
+    var calc = notaCalc(n.items || [], n.ivaRate, n.preciosIncluyenIva);
+    (n.items || []).forEach(function(it, i){
+      var descLines = doc.splitTextToSize(String(it.descripcion || "—"), unitX - descX - 4);
+      doc.text(String(it.cantidad || 0), margin + 1, y);
+      doc.text(descLines, descX, y);
+      doc.text(currency(it.precioUnit || 0), unitX + 18, y, { align: "right" });
+      doc.text(currency(calc.lines[i] || 0), pageWidth - margin, y, { align: "right" });
+      y += Math.max(descLines.length, 1) * 4.6 + 3;
+      doc.setDrawColor(220, 226, 208);
+      doc.line(margin, y - 2, pageWidth - margin, y - 2);
+    });
+
+    y += 5;
+    var boxX = pageWidth - margin - 60;
+    function totalRow(label, value, bold) {
+      doc.setFont("helvetica", bold ? "bold" : "normal");
+      doc.setFontSize(bold ? 11 : 9.5);
+      doc.setTextColor(69, 82, 107);
+      doc.text(label, boxX, y);
+      doc.setTextColor(31, 42, 60);
+      doc.text(currency(value), pageWidth - margin, y, { align: "right" });
+      y += bold ? 7 : 5.5;
+    }
+    totalRow("Subtotal", calc.subtotal, false);
+    totalRow("IVA (" + (Number(n.ivaRate) || 0) + "%)", calc.iva, false);
+    doc.setDrawColor(31, 42, 60);
+    doc.line(boxX, y - 1, pageWidth - margin, y - 1);
+    y += 3;
+    totalRow("Total", calc.total, true);
+
+    if (n.trabajo) { y += 6; field("Trabajo realizado / observaciones:", n.trabajo); }
+
+    y += 16;
+    doc.setDrawColor(140, 150, 130);
+    doc.line(margin, y, margin + 70, y);
+    doc.line(pageWidth - margin - 70, y, pageWidth - margin, y);
+    y += 5;
+    doc.setFontSize(9); doc.setTextColor(107, 117, 102);
+    doc.text("Firma de conformidad — cliente", margin, y);
+    doc.text("Por GALEX DIGITAL", pageWidth - margin - 70, y);
+
+    y += 14;
+    doc.setFontSize(7.5); doc.setTextColor(140, 150, 130);
+    doc.text("Este documento ampara los trabajos realizados por GALEX DIGITAL y no tiene efectos fiscales. La factura se emite por separado.", margin, y, { maxWidth: pageWidth - margin * 2 });
+
+    doc.save((n.folio || "nota-de-servicio") + ".pdf");
+  }
+
   // ---------- Equipo ----------
   function equipoHTML() {
     var rows = state.team.map(function(m){

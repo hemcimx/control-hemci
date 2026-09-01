@@ -191,6 +191,15 @@ async function nextTicketFolio(env) {
   return "HEMCI-" + year + "-" + String(counter).padStart(4, "0");
 }
 
+async function nextNotaFolio(env) {
+  var counterRaw = await env.HEMCI_KV.get("nota_counter");
+  var counter = counterRaw ? parseInt(counterRaw, 10) : 0;
+  counter += 1;
+  await env.HEMCI_KV.put("nota_counter", String(counter));
+  var year = new Intl.DateTimeFormat("en-US", { timeZone: "America/Mexico_City", year: "numeric" }).format(new Date());
+  return "NOTA-" + year + "-" + String(counter).padStart(4, "0");
+}
+
 var LOGIN_MAX_ATTEMPTS = 5;
 var LOGIN_LOCKOUT_SECONDS = 15 * 60;
 async function isLoginLocked(env, key) {
@@ -473,6 +482,45 @@ export default {
       var digits = String(waBody.number || "").replace(/\D/g, "");
       await env.HEMCI_KV.put("support_whatsapp", digits);
       return jsonResponse({ ok: true, number: digits });
+    }
+
+    // ---- Notas de servicio: crear (folio asignado por el servidor) ----
+    if (innerPath === "/api/notas" && request.method === "POST") {
+      var notaSession = await requireSession(request, env);
+      if (!notaSession) return jsonError("No autenticado.", 401);
+      if (!env.HEMCI_KV) return jsonError("KV no configurado.", 500);
+      var nbody; try { nbody = await request.json(); } catch (e) { return jsonError("Solicitud inválida.", 400); }
+      if (!nbody.cliente || !String(nbody.cliente).trim()) return jsonError("Falta el cliente.", 400);
+      var notasRaw = await env.HEMCI_KV.get("notas");
+      var notas = notasRaw ? JSON.parse(notasRaw) : [];
+      var notaFolio = await nextNotaFolio(env);
+      var nota = {
+        id: uidServer(),
+        folio: notaFolio,
+        createdAt: Date.now(),
+        createdBy: notaSession.name || "",
+        cliente: String(nbody.cliente || "").trim().slice(0, 200),
+        contacto: String(nbody.contacto || "").trim().slice(0, 200),
+        area: String(nbody.area || "").trim().slice(0, 120),
+        ticketFolio: String(nbody.ticketFolio || "").trim().slice(0, 40),
+        fecha: String(nbody.fecha || "").slice(0, 10),
+        items: Array.isArray(nbody.items) ? nbody.items.slice(0, 60).map(function (it) {
+          return {
+            descripcion: String(it.descripcion || "").slice(0, 300),
+            cantidad: Number(it.cantidad) || 0,
+            precioUnit: Number(it.precioUnit) || 0
+          };
+        }) : [],
+        ivaRate: Number(nbody.ivaRate) || 0,
+        preciosIncluyenIva: !!nbody.preciosIncluyenIva,
+        subtotal: Number(nbody.subtotal) || 0,
+        iva: Number(nbody.iva) || 0,
+        total: Number(nbody.total) || 0,
+        trabajo: String(nbody.trabajo || "").slice(0, 3000)
+      };
+      notas = [nota].concat(notas);
+      await env.HEMCI_KV.put("notas", JSON.stringify(notas));
+      return jsonResponse({ ok: true, nota: nota });
     }
 
     // ---- API general de datos: ahora requiere sesión válida ----
