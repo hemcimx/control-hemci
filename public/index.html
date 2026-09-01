@@ -171,6 +171,8 @@
     budgets: {},
     auditLog: [],
     tickets: [],
+    notas: [],
+    notaDraft: null,
     loading: true,
     notice: null,
     gastosMonthFilter: new Date().toISOString().slice(0,7),
@@ -409,9 +411,10 @@
       loadKey("contributions", []),
       loadKey("budgets", {}),
       loadKey("auditlog", []),
-      loadKey("tickets", [])
+      loadKey("tickets", []),
+      loadKey("notas", [])
     ]);
-    var expenses = results[0], tasks = results[1], settings = results[2], contributions = results[3], budgets = results[4], auditLog = results[5], tickets = results[6];
+    var expenses = results[0], tasks = results[1], settings = results[2], contributions = results[3], budgets = results[4], auditLog = results[5], tickets = results[6], notas = results[7];
     var team = teamResult.value;
     if (teamResult.failed) {
       // No se pudo confirmar si hay equipo guardado (falla de red/servidor).
@@ -431,6 +434,7 @@
     state.budgets = budgets || {};
     state.auditLog = auditLog || [];
     state.tickets = tickets || [];
+    state.notas = notas || [];
     state.loading = false;
     render();
     if (state.loadError) {
@@ -535,6 +539,7 @@
             tabButton("aportaciones", "Aportaciones") +
             tabButton("tareas", "Tareas") +
             tabButton("soporte", "Soporte IT") +
+            tabButton("notas", "Notas") +
             tabButton("equipo", "Equipo") +
             tabButton("historial", "Historial") +
           '</nav>' +
@@ -594,6 +599,7 @@
     if (state.tab === "aportaciones") return aportacionesHTML();
     if (state.tab === "tareas") return tareasHTML();
     if (state.tab === "soporte") return ticketsHTML();
+    if (state.tab === "notas") return notasHTML();
     if (state.tab === "equipo") return equipoHTML();
     if (state.tab === "historial") return historialHTML();
     return "";
@@ -604,6 +610,7 @@
     if (state.tab === "aportaciones") bindAportacionesEvents();
     if (state.tab === "tareas") bindTareasEvents();
     if (state.tab === "soporte") bindTicketsEvents();
+    if (state.tab === "notas") bindNotasEvents();
     if (state.tab === "equipo") bindEquipoEvents();
     if (state.tab === "historial") bindHistorialEvents();
   }
