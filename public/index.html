@@ -1912,19 +1912,20 @@
       doc.text(descLines, descX, y);
       doc.text(currency(it.precioUnit || 0), unitX + 18, y, { align: "right" });
       doc.text(currency(calc.lines[i] || 0), pageWidth - margin, y, { align: "right" });
-      y += Math.max(descLines.length, 1) * 4.6 + 2;
+      y += (descLines.length - 1) * 4.4 + 4;
       if (it.subitems && it.subitems.length) {
-        doc.setFontSize(8.5); doc.setTextColor(107, 117, 102);
-        it.subitems.forEach(function(s){
-          var sl = doc.splitTextToSize("–  " + String(s), unitX - descX - 8);
-          doc.text(sl, descX + 3, y);
-          y += sl.length * 3.9 + 1;
-        });
         y += 1;
+        doc.setFontSize(8.5); doc.setTextColor(120, 128, 116);
+        it.subitems.forEach(function(s){
+          var sl = doc.splitTextToSize("–  " + String(s), unitX - descX - 10);
+          doc.text(sl, descX + 3, y);
+          y += (sl.length - 1) * 3.9 + 4;
+        });
       }
-      y += 2;
-      doc.setDrawColor(220, 226, 208);
-      doc.line(margin, y - 2, pageWidth - margin, y - 2);
+      y += 4;
+      doc.setDrawColor(224, 228, 214);
+      doc.line(margin, y, pageWidth - margin, y);
+      y += 6;
     });
 
     if (y > pageHeight - 60) { doc.addPage(); y = 22; }
