@@ -1609,20 +1609,31 @@
 
     var listHTML = state.notas.length === 0
       ? '<p class="empty">Aún no hay notas emitidas.</p>'
-      : '<table><thead><tr><th>Folio</th><th>Fecha</th><th>Cliente</th><th>Total</th><th></th><th></th></tr></thead><tbody>' +
+      : '<table><thead><tr><th>Folio</th><th>Fecha</th><th>Cliente</th><th>Total</th><th></th><th></th><th></th></tr></thead><tbody>' +
         state.notas.map(function(n){
           return '<tr>' +
-            '<td class="mono" data-label="Folio">' + escapeHtml(n.folio || "") + '</td>' +
+            '<td class="mono" data-label="Folio">' + escapeHtml(n.folio || "") + (n.updatedAt ? ' <span class="hint" style="margin:0;">(editada)</span>' : '') + '</td>' +
             '<td data-label="Fecha">' + formatDateMX(n.fecha || (new Date(n.createdAt)).toISOString().slice(0, 10)) + '</td>' +
             '<td data-label="Cliente">' + escapeHtml(n.cliente || "—") + '</td>' +
             '<td class="mono amount" data-label="Total">' + currency(n.total) + '</td>' +
+            '<td data-label=""><button type="button" class="link-btn" data-nota-edit="' + escapeHtml(n.id) + '">Editar</button></td>' +
             '<td data-label=""><button type="button" class="link-btn" data-nota-pdf="' + escapeHtml(n.id) + '">PDF</button></td>' +
             '<td data-label=""><button class="icon-btn" data-nota-del="' + escapeHtml(n.id) + '" aria-label="Eliminar nota">✕ Eliminar</button></td>' +
           '</tr>';
         }).join("") + '</tbody></table>';
 
+    var editing = d.editingId ? state.notas.find(function(x){ return x.id === d.editingId; }) : null;
+    var editBanner = editing
+      ? '<div class="card" style="background:var(--paper-dark); display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap;">' +
+          '<span>Editando la nota <strong class="mono">' + escapeHtml(editing.folio) + '</strong> — el folio no cambia.</span>' +
+          '<button type="button" class="link-btn" id="nota-canceledit">Cancelar edición</button>' +
+        '</div>'
+      : '';
+    var saveLabel = d.editingId ? "Guardar cambios y descargar PDF" : "Guardar y descargar PDF";
+
     return (
       '<h2 class="panel-title">Notas de servicio</h2>' +
+      editBanner +
       '<div class="card form-grid">' +
         '<label class="span-2">Cliente / a quién se entrega<input type="text" id="nota-cliente" value="' + escapeHtml(d.cliente) + '" placeholder="Ej. HEMCI — Hospital de Especialidades Médicas de la Ciénega" /></label>' +
         '<label>Contacto<input type="text" id="nota-contacto" value="' + escapeHtml(d.contacto) + '" placeholder="Nombre y teléfono" /></label>' +
@@ -1653,7 +1664,7 @@
         '<label style="display:block; font-size:12px; color:var(--ink-soft);">Trabajo realizado / observaciones' +
         '<textarea id="nota-trabajo" rows="4" style="width:100%; font-family:var(--font-body); font-size:13px; padding:8px 9px; border:1px solid var(--paper-line); border-radius:6px; resize:vertical; margin-top:4px;" placeholder="Describe el trabajo que se hizo">' + escapeHtml(d.trabajo) + '</textarea></label>' +
       '</div>' +
-      '<button type="button" class="btn-primary" id="nota-save" style="width:100%;">Guardar y descargar PDF</button>' +
+      '<button type="button" class="btn-primary" id="nota-save" style="width:100%;">' + saveLabel + '</button>' +
       '<h3 class="card-title" style="margin-top:22px;">Notas emitidas</h3>' +
       '<div class="card">' + listHTML + '</div>'
     );
@@ -1752,6 +1763,40 @@
         if (confirm("¿Eliminar esta nota? El folio no se reutiliza.")) deleteNota(btn.dataset.notaDel);
       });
     });
+    document.querySelectorAll("[data-nota-edit]").forEach(function(btn){
+      btn.addEventListener("click", function(){ startEditNota(btn.dataset.notaEdit); });
+    });
+    var cancelEdit = document.getElementById("nota-canceledit");
+    if (cancelEdit) cancelEdit.addEventListener("click", function(){
+      state.notaDraft = defaultNotaDraft();
+      renderTabContent();
+    });
+  }
+
+  function startEditNota(id) {
+    var n = state.notas.find(function(x){ return x.id === id; });
+    if (!n) { flash("Esa nota ya no existe.", true); return; }
+    state.notaDraft = {
+      editingId: id,
+      cliente: n.cliente || "", contacto: n.contacto || "", area: n.area || "",
+      ticketFolio: n.ticketFolio || "",
+      fecha: n.fecha || (new Date(n.createdAt)).toISOString().slice(0, 10),
+      ivaRate: n.ivaRate != null ? n.ivaRate : 16,
+      preciosIncluyenIva: !!n.preciosIncluyenIva,
+      trabajo: n.trabajo || "",
+      items: (n.items && n.items.length ? n.items : [{}]).map(function(it){
+        return {
+          descripcion: it.descripcion || "",
+          cantidad: it.cantidad != null ? it.cantidad : 1,
+          precioUnit: it.precioUnit || 0,
+          subitems: (it.subitems || []).slice()
+        };
+      })
+    };
+    state.tab = "notas";
+    document.querySelectorAll(".tab").forEach(function(b){ b.classList.toggle("tab-active", b.dataset.tab === "notas"); });
+    renderTabContent();
+    try { window.scrollTo(0, 0); } catch (e) {}
   }
 
   async function saveNota() {
@@ -1768,6 +1813,26 @@
       subtotal: calc.subtotal, iva: calc.iva, total: calc.total, trabajo: d.trabajo.trim()
     };
     var btn = document.getElementById("nota-save");
+
+    if (d.editingId) {
+      var idx = state.notas.findIndex(function(x){ return x.id === d.editingId; });
+      if (idx === -1) { flash("Esa nota ya no existe.", true); state.notaDraft = defaultNotaDraft(); renderTabContent(); return; }
+      if (btn) { btn.disabled = true; btn.textContent = "Guardando…"; }
+      var updated = Object.assign({}, state.notas[idx], payload, { updatedAt: Date.now() });
+      var nextNotas = state.notas.slice();
+      nextNotas[idx] = updated;
+      var okEdit = await saveKey("notas", nextNotas);
+      if (btn) { btn.disabled = false; btn.textContent = "Guardar cambios y descargar PDF"; }
+      if (!okEdit) { flash("No se pudieron guardar los cambios.", true); return; }
+      state.notas = nextNotas;
+      state.notaDraft = defaultNotaDraft();
+      flash("Nota " + updated.folio + " actualizada.");
+      logActivity("Nota de servicio " + updated.folio + " editada (" + currency(updated.total) + ")");
+      renderTabContent();
+      generateNotaPDF(updated);
+      return;
+    }
+
     if (btn) { btn.disabled = true; btn.textContent = "Guardando…"; }
     try {
       var res = await fetch("/betoalex/api/notas", {
