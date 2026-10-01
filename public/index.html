@@ -173,6 +173,8 @@
     tickets: [],
     notas: [],
     notaDraft: null,
+    notaExpanded: {},
+    notasBusqueda: "",
     loading: true,
     notice: null,
     gastosMonthFilter: new Date().toISOString().slice(0,7),
@@ -637,9 +639,9 @@
     var avgProgress = active.length ? Math.round(active.reduce(function(s,t){ return s + Number(t.progress || 0); }, 0) / active.length) : 0;
     var totalAportado = confirmedContributions.reduce(function(s,c){ return s + Number(c.amount || 0); }, 0);
     var totalGastadoTodo = confirmedExpenses.reduce(function(s,e){ return s + Number(e.amount || 0); }, 0);
-    var totalCobradoNotas = (state.notas || []).filter(function(n){ return n.pagada; }).reduce(function(s,n){ return s + Number(n.total || 0); }, 0);
+    var totalCobradoNotas = (state.notas || []).reduce(function(s,n){ return s + notaAbonado(n); }, 0);
     var disponible = totalAportado + totalCobradoNotas - totalGastadoTodo;
-    var notasPorCobrar = (state.notas || []).filter(function(n){ return !n.pagada; }).length;
+    var notasPorCobrar = (state.notas || []).filter(function(n){ return notaSaldo(n) > 0; }).length;
     var upcoming = state.tasks.filter(function(t){ return t.dueDate && t.status !== "hecho" && t.status !== "cancelada"; })
       .sort(function(a,b){ return a.dueDate.localeCompare(b.dueDate); }).slice(0,5);
     var feed = state.expenses.map(function(e){ return { ts: e.createdAt || 0, text: "Gasto de " + currency(e.amount) + " en " + escapeHtml(e.category) }; })
@@ -1525,6 +1527,24 @@
     };
   }
 
+  function notaAbonos(n) {
+    if (n.abonos && n.abonos.length) return n.abonos;
+    if (n.pagada) return [{ id: "legacy", fecha: n.fechaPago || n.fecha || todayISO(), monto: Number(n.total) || 0, metodo: "" }];
+    return [];
+  }
+  function notaAbonado(n) {
+    return notaAbonos(n).reduce(function(s, a){ return s + Number(a.monto || 0); }, 0);
+  }
+  function notaSaldo(n) {
+    return Math.max(0, Math.round((Number(n.total || 0) - notaAbonado(n)) * 100) / 100);
+  }
+  function notaEstadoPago(n) {
+    var saldo = notaSaldo(n);
+    if (saldo <= 0.004) return { key: "pagada", label: "Pagada" };
+    if (notaAbonado(n) > 0) return { key: "parcial", label: "Parcial" };
+    return { key: "pendiente", label: "Por cobrar" };
+  }
+
   function defaultNotaDraft() {
     var rate = (state.settings && state.settings.ivaRate != null) ? state.settings.ivaRate : 16;
     return {
@@ -1615,23 +1635,76 @@
       '</tbody>';
     }).join("");
 
-    var listHTML = state.notas.length === 0
-      ? '<p class="empty">Aún no hay notas emitidas.</p>'
-      : '<table><thead><tr><th>Folio</th><th>Fecha</th><th>Cliente</th><th>Total</th><th>Estado</th><th></th><th></th><th></th></tr></thead><tbody>' +
-        state.notas.map(function(n){
+    var busqueda = (state.notasBusqueda || "").trim().toLowerCase();
+    var notasFiltradas = state.notas.filter(function(n){
+      if (!busqueda) return true;
+      return (n.cliente || "").toLowerCase().indexOf(busqueda) !== -1 || (n.folio || "").toLowerCase().indexOf(busqueda) !== -1;
+    });
+
+    function estadoStampHTML(n) {
+      var e = notaEstadoPago(n);
+      var cls = e.key === "pagada" ? "stamp-hecho" : (e.key === "parcial" ? "stamp-en_proceso" : "stamp-pendiente");
+      return '<span class="stamp ' + cls + '">' + e.label + '</span>';
+    }
+
+    function abonosPanelHTML(n) {
+      var abonos = notaAbonos(n);
+      var saldo = notaSaldo(n);
+      var rows = abonos.length === 0 ? '<p class="empty" style="margin:0 0 8px;">Sin abonos todavía.</p>' :
+        '<table><thead><tr><th>Fecha</th><th>Monto</th><th>Método</th><th></th><th></th></tr></thead><tbody>' +
+        abonos.map(function(a){
+          var isLegacy = a.id === "legacy";
           return '<tr>' +
+            '<td class="mono" data-label="Fecha">' + formatDateMX(a.fecha) + '</td>' +
+            '<td class="mono amount" data-label="Monto">' + currency(a.monto) + '</td>' +
+            '<td data-label="Método">' + escapeHtml(a.metodo || "—") + '</td>' +
+            '<td data-label="">' + (isLegacy ? "" : '<button type="button" class="link-btn" data-abono-recibo="' + escapeHtml(n.id) + ':' + escapeHtml(a.id) + '">Recibo</button>') + '</td>' +
+            '<td data-label="">' + (isLegacy ? "" : '<button class="icon-btn" data-abono-del="' + escapeHtml(n.id) + ':' + escapeHtml(a.id) + '" aria-label="Eliminar abono">✕</button>') + '</td>' +
+          '</tr>';
+        }).join("") + '</tbody></table>';
+      return (
+        '<tr><td colspan="8" style="padding:0;">' +
+          '<div class="card" style="margin:0; border-top:none; border-radius:0 0 10px 10px; background:#fff;">' +
+            '<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; flex-wrap:wrap; gap:8px;">' +
+              '<strong style="font-size:12px; color:var(--ink-soft);">ABONOS DE ' + escapeHtml(n.folio || "") + '</strong>' +
+              '<span class="mono" style="font-size:13px;">Saldo pendiente: <strong>' + currency(saldo) + '</strong></span>' +
+            '</div>' +
+            rows +
+            '<div style="display:flex; gap:10px; flex-wrap:wrap; align-items:flex-end; margin-top:10px; padding-top:10px; border-top:1px dashed var(--paper-line);">' +
+              '<label style="font-size:11px; color:var(--ink-soft);">Fecha<input type="date" data-abono-fecha="' + escapeHtml(n.id) + '" value="' + todayISO() + '" style="min-width:130px;" /></label>' +
+              '<label style="font-size:11px; color:var(--ink-soft);">Monto<input type="number" min="0" step="0.01" data-abono-monto="' + escapeHtml(n.id) + '" placeholder="0.00" style="width:110px;" /></label>' +
+              '<label style="font-size:11px; color:var(--ink-soft);">Método (opcional)<input type="text" data-abono-metodo="' + escapeHtml(n.id) + '" placeholder="Transferencia" style="width:150px;" /></label>' +
+              '<button type="button" class="btn-secondary" style="margin-top:0;" data-abono-add="' + escapeHtml(n.id) + '">Registrar abono</button>' +
+              (saldo > 0 ? '<button type="button" class="btn-secondary" style="margin-top:0;" data-abono-pagarsaldo="' + escapeHtml(n.id) + '">Marcar saldo pagado</button>' : '') +
+            '</div>' +
+          '</div>' +
+        '</td></tr>'
+      );
+    }
+
+    var listHTML = notasFiltradas.length === 0
+      ? '<p class="empty">' + (busqueda ? "No hay notas que coincidan con la búsqueda." : "Aún no hay notas emitidas.") + '</p>'
+      : '<table><thead><tr><th>Folio</th><th>Fecha</th><th>Cliente</th><th>Total</th><th>Saldo</th><th>Estado</th><th></th><th></th></tr></thead>' +
+        notasFiltradas.map(function(n){
+          var expanded = !!state.notaExpanded[n.id];
+          var saldo = notaSaldo(n);
+          var mainRow = '<tr>' +
             '<td class="mono" data-label="Folio">' + escapeHtml(n.folio || "") + (n.updatedAt ? ' <span class="hint" style="margin:0;">(editada)</span>' : '') + '</td>' +
             '<td data-label="Fecha">' + formatDateMX(n.fecha || (new Date(n.createdAt)).toISOString().slice(0, 10)) + '</td>' +
             '<td data-label="Cliente">' + escapeHtml(n.cliente || "—") + '</td>' +
             '<td class="mono amount" data-label="Total">' + currency(n.total) + '</td>' +
-            '<td data-label="Estado">' + (n.pagada
-              ? '<span class="stamp stamp-hecho">Pagada</span>'
-              : '<span class="stamp stamp-pendiente">Por cobrar</span>') + '</td>' +
-            '<td data-label=""><button type="button" class="link-btn" data-nota-togglepago="' + escapeHtml(n.id) + '" data-pagada="' + (n.pagada ? "1" : "0") + '">' + (n.pagada ? "Marcar pendiente" : "Marcar pagada") + '</button></td>' +
-            '<td data-label=""><button type="button" class="link-btn" data-nota-edit="' + escapeHtml(n.id) + '">Editar</button> · <button type="button" class="link-btn" data-nota-pdf="' + escapeHtml(n.id) + '">PDF</button></td>' +
+            '<td class="mono" data-label="Saldo" style="' + (saldo > 0 ? "color:var(--stamp-red); font-weight:700;" : "") + '">' + currency(saldo) + '</td>' +
+            '<td data-label="Estado">' + estadoStampHTML(n) + '</td>' +
+            '<td data-label="">' +
+              '<button type="button" class="link-btn" data-nota-toggleabonos="' + escapeHtml(n.id) + '">' + (expanded ? "Ocultar abonos" : "Abonos (" + notaAbonos(n).length + ")") + '</button> · ' +
+              '<button type="button" class="link-btn" data-nota-duplicate="' + escapeHtml(n.id) + '">Duplicar</button> · ' +
+              '<button type="button" class="link-btn" data-nota-edit="' + escapeHtml(n.id) + '">Editar</button> · ' +
+              '<button type="button" class="link-btn" data-nota-pdf="' + escapeHtml(n.id) + '">PDF</button>' +
+            '</td>' +
             '<td data-label=""><button class="icon-btn" data-nota-del="' + escapeHtml(n.id) + '" aria-label="Eliminar nota">✕ Eliminar</button></td>' +
           '</tr>';
-        }).join("") + '</tbody></table>';
+          return '<tbody>' + mainRow + (expanded ? abonosPanelHTML(n) : "") + '</tbody>';
+        }).join("") + '</table>';
 
     var editing = d.editingId ? state.notas.find(function(x){ return x.id === d.editingId; }) : null;
     var editBanner = editing
@@ -1676,8 +1749,12 @@
         '<textarea id="nota-trabajo" rows="4" style="width:100%; font-family:var(--font-body); font-size:13px; padding:8px 9px; border:1px solid var(--paper-line); border-radius:6px; resize:vertical; margin-top:4px;" placeholder="Describe el trabajo que se hizo">' + escapeHtml(d.trabajo) + '</textarea></label>' +
       '</div>' +
       '<button type="button" class="btn-primary" id="nota-save" style="width:100%;">' + saveLabel + '</button>' +
-      '<h3 class="card-title" style="margin-top:22px;">Notas emitidas</h3>' +
-      '<div class="card">' + listHTML + '</div>'
+      '<h3 class="card-title" style="margin-top:22px;">Notas emitidas (' + notasFiltradas.length + (busqueda ? " de " + state.notas.length : "") + ')</h3>' +
+      '<div class="list-header">' +
+        '<input type="text" id="notas-busqueda" value="' + escapeHtml(state.notasBusqueda) + '" placeholder="Buscar por cliente o folio…" style="max-width:260px;" />' +
+        '<button type="button" class="btn-secondary" style="margin-top:0;" id="notas-export-btn">Exportar CSV</button>' +
+      '</div>' +
+      '<div class="card table-wrap">' + listHTML + '</div>'
     );
   }
 
@@ -1777,16 +1854,86 @@
     document.querySelectorAll("[data-nota-edit]").forEach(function(btn){
       btn.addEventListener("click", function(){ startEditNota(btn.dataset.notaEdit); });
     });
-    document.querySelectorAll("[data-nota-togglepago]").forEach(function(btn){
+    document.querySelectorAll("[data-nota-duplicate]").forEach(function(btn){
+      btn.addEventListener("click", function(){ duplicateNota(btn.dataset.notaDuplicate); });
+    });
+    document.querySelectorAll("[data-nota-toggleabonos]").forEach(function(btn){
       btn.addEventListener("click", function(){
-        toggleNotaPagada(btn.dataset.notaTogglepago, btn.dataset.pagada !== "1");
+        var id = btn.dataset.notaToggleabonos;
+        state.notaExpanded[id] = !state.notaExpanded[id];
+        renderTabContent();
       });
     });
+    document.querySelectorAll("[data-abono-add]").forEach(function(btn){
+      btn.addEventListener("click", function(){
+        var id = btn.dataset.abonoAdd;
+        var fecha = document.querySelector('[data-abono-fecha="' + id + '"]').value || todayISO();
+        var monto = Number(document.querySelector('[data-abono-monto="' + id + '"]').value) || 0;
+        var metodo = document.querySelector('[data-abono-metodo="' + id + '"]').value || "";
+        if (monto <= 0) { flash("Pon un monto mayor a cero.", true); return; }
+        addAbono(id, monto, fecha, metodo);
+      });
+    });
+    document.querySelectorAll("[data-abono-pagarsaldo]").forEach(function(btn){
+      btn.addEventListener("click", function(){
+        var id = btn.dataset.abonoPagarsaldo;
+        var n = state.notas.find(function(x){ return x.id === id; });
+        if (n) addAbono(id, notaSaldo(n), todayISO(), "");
+      });
+    });
+    document.querySelectorAll("[data-abono-del]").forEach(function(btn){
+      btn.addEventListener("click", function(){
+        var parts = btn.dataset.abonoDel.split(":");
+        if (confirm("¿Eliminar este abono?")) deleteAbono(parts[0], parts[1]);
+      });
+    });
+    document.querySelectorAll("[data-abono-recibo]").forEach(function(btn){
+      btn.addEventListener("click", function(){
+        var parts = btn.dataset.abonoRecibo.split(":");
+        var n = state.notas.find(function(x){ return x.id === parts[0]; });
+        var a = n && notaAbonos(n).find(function(x){ return x.id === parts[1]; });
+        if (n && a) generateAbonoPDF(n, a);
+      });
+    });
+    var busquedaInput = document.getElementById("notas-busqueda");
+    if (busquedaInput) busquedaInput.addEventListener("input", function(e){
+      state.notasBusqueda = e.target.value;
+      renderTabContent();
+      var el = document.getElementById("notas-busqueda");
+      if (el) { el.focus(); el.selectionStart = el.selectionEnd = el.value.length; }
+    });
+    var exportBtn = document.getElementById("notas-export-btn");
+    if (exportBtn) exportBtn.addEventListener("click", exportNotasCSV);
     var cancelEdit = document.getElementById("nota-canceledit");
     if (cancelEdit) cancelEdit.addEventListener("click", function(){
       state.notaDraft = defaultNotaDraft();
       renderTabContent();
     });
+  }
+
+  function duplicateNota(id) {
+    var n = state.notas.find(function(x){ return x.id === id; });
+    if (!n) { flash("Esa nota ya no existe.", true); return; }
+    state.notaDraft = {
+      cliente: n.cliente || "", contacto: n.contacto || "", area: n.area || "",
+      ticketFolio: n.ticketFolio || "", fecha: todayISO(),
+      ivaRate: n.ivaRate != null ? n.ivaRate : 16,
+      preciosIncluyenIva: !!n.preciosIncluyenIva,
+      trabajo: n.trabajo || "",
+      items: (n.items && n.items.length ? n.items : [{}]).map(function(it){
+        return {
+          descripcion: it.descripcion || "",
+          cantidad: it.cantidad != null ? it.cantidad : 1,
+          precioUnit: it.precioUnit || 0,
+          subitems: (it.subitems || []).slice()
+        };
+      })
+    };
+    state.tab = "notas";
+    document.querySelectorAll(".tab").forEach(function(b){ b.classList.toggle("tab-active", b.dataset.tab === "notas"); });
+    renderTabContent();
+    try { window.scrollTo(0, 0); } catch (e) {}
+    flash("Nota duplicada en el formulario — revisa fecha e importes y guarda para crear el folio nuevo.");
   }
 
   function startEditNota(id) {
@@ -1880,17 +2027,93 @@
     renderTabContent();
   }
 
-  async function toggleNotaPagada(id, pagada) {
-    var idx = state.notas.findIndex(function(n){ return n.id === id; });
+  async function addAbono(notaId, monto, fecha, metodo) {
+    var idx = state.notas.findIndex(function(n){ return n.id === notaId; });
     if (idx === -1) return;
+    var n = state.notas[idx];
+    var abono = { id: uid(), fecha: fecha || todayISO(), monto: Math.round((Number(monto) || 0) * 100) / 100, metodo: (metodo || "").trim() };
     var next = state.notas.slice();
-    next[idx] = Object.assign({}, next[idx], { pagada: !!pagada, fechaPago: pagada ? todayISO() : null });
+    next[idx] = Object.assign({}, n, { abonos: notaAbonos(n).filter(function(a){ return a.id !== "legacy"; }).concat([abono]) });
     var ok = await saveKey("notas", next);
-    if (!ok) { flash("No se pudo actualizar la nota.", true); return; }
+    if (!ok) { flash("No se pudo registrar el abono.", true); return; }
     state.notas = next;
-    logActivity("Nota " + (next[idx].folio || "") + (pagada ? " marcada como pagada" : " marcada como pendiente de cobro"));
-    flash(pagada ? "Nota marcada como pagada." : "Nota marcada como pendiente de cobro.");
+    logActivity("Abono de " + currency(abono.monto) + " registrado a la nota " + (n.folio || ""));
+    flash("Abono de " + currency(abono.monto) + " registrado.");
     renderTabContent();
+  }
+
+  async function deleteAbono(notaId, abonoId) {
+    var idx = state.notas.findIndex(function(n){ return n.id === notaId; });
+    if (idx === -1) return;
+    var n = state.notas[idx];
+    var next = state.notas.slice();
+    next[idx] = Object.assign({}, n, { abonos: notaAbonos(n).filter(function(a){ return a.id !== abonoId; }) });
+    var ok = await saveKey("notas", next);
+    if (!ok) { flash("No se pudo eliminar el abono.", true); return; }
+    state.notas = next;
+    logActivity("Abono eliminado de la nota " + (n.folio || ""));
+    flash("Abono eliminado.");
+    renderTabContent();
+  }
+
+  function exportNotasCSV() {
+    var rows = [["Folio", "Fecha", "Cliente", "Contacto", "Área", "Reporte", "Total", "Abonado", "Saldo", "Estado"]];
+    state.notas.slice().sort(function(a, b){ return (b.createdAt || 0) - (a.createdAt || 0); }).forEach(function(n){
+      rows.push([
+        n.folio || "", formatDateMX(n.fecha || (new Date(n.createdAt)).toISOString().slice(0, 10)),
+        n.cliente || "", n.contacto || "", n.area || "", n.ticketFolio || "",
+        n.total, notaAbonado(n), notaSaldo(n), notaEstadoPago(n).label
+      ]);
+    });
+    downloadCSV("notas-de-servicio.csv", rows);
+  }
+
+  function generateAbonoPDF(n, a) {
+    if (!window.jspdf || !window.jspdf.jsPDF) { flash("No se pudo cargar el generador de PDF. Revisa tu conexión e intenta de nuevo.", true); return; }
+    var doc = new window.jspdf.jsPDF({ unit: "mm", format: "letter" });
+    var pageWidth = doc.internal.pageSize.getWidth();
+    var margin = 18;
+    var y = 18;
+    var saldoTrasAbono = Math.max(0, Math.round((Number(n.total || 0) - notaAbonos(n).filter(function(x){
+      return x.fecha < a.fecha || (x.fecha === a.fecha && x.id <= a.id);
+    }).reduce(function(s, x){ return s + Number(x.monto || 0); }, 0)) * 100) / 100);
+    y = drawGalexHeader(doc, pageWidth, margin, y, "Recibo de Abono",
+      ["Nota: " + (n.folio || "—"), "Fecha: " + formatDateMX(a.fecha)]);
+    doc.setDrawColor(198, 208, 180);
+    doc.line(margin, y, pageWidth - margin, y);
+    y += 12;
+
+    function field(label, value) {
+      doc.setFont("helvetica", "bold"); doc.setFontSize(9.5); doc.setTextColor(69, 82, 107);
+      doc.text(label, margin, y);
+      doc.setFont("helvetica", "normal"); doc.setFontSize(10); doc.setTextColor(31, 42, 60);
+      var lines = doc.splitTextToSize(String(value || "—"), pageWidth - margin * 2);
+      doc.text(lines, margin, y + 5);
+      y += 5 + (lines.length * 5) + 6;
+    }
+    field("Recibimos de:", n.cliente);
+    if (a.metodo) field("Método de pago:", a.metodo);
+
+    doc.setFillColor(236, 239, 225);
+    doc.rect(margin, y - 5, pageWidth - margin * 2, 20, "F");
+    doc.setFont("helvetica", "bold"); doc.setFontSize(10); doc.setTextColor(69, 82, 107);
+    doc.text("MONTO ABONADO", margin + 6, y + 2);
+    doc.setFontSize(16); doc.setTextColor(31, 42, 60);
+    doc.text(currency(a.monto), margin + 6, y + 10);
+    doc.setFont("helvetica", "normal"); doc.setFontSize(10); doc.setTextColor(69, 82, 107);
+    doc.text("Saldo restante de la nota:", pageWidth - margin - 6, y + 2, { align: "right" });
+    doc.setFont("helvetica", "bold"); doc.setFontSize(13); doc.setTextColor(saldoTrasAbono > 0 ? 156 : 63, saldoTrasAbono > 0 ? 59 : 107, saldoTrasAbono > 0 ? 46 : 74);
+    doc.text(currency(saldoTrasAbono), pageWidth - margin - 6, y + 10, { align: "right" });
+    y += 26;
+
+    y += 10;
+    doc.setDrawColor(140, 150, 130);
+    doc.line(pageWidth - margin - 70, y, pageWidth - margin, y);
+    y += 5;
+    doc.setFontSize(9); doc.setTextColor(107, 117, 102);
+    doc.text("Por GALEX DIGITAL", pageWidth - margin - 70, y);
+
+    doc.save((n.folio || "nota") + "-abono-" + (a.fecha || todayISO()) + ".pdf");
   }
 
   // ---------- Balance ----------
@@ -1908,14 +2131,32 @@
       return !monthFilter || f.slice(0, 7) === monthFilter;
     });
     var facturadoPeriodo = periodNotas.reduce(function(s, n){ return s + Number(n.total || 0); }, 0);
-    var cobradoPeriodo = periodNotas.filter(function(n){ return n.pagada; }).reduce(function(s, n){ return s + Number(n.total || 0); }, 0);
 
-    var pendientesCobro = notas.filter(function(n){ return !n.pagada; }).sort(function(a, b){ return (a.createdAt || 0) - (b.createdAt || 0); });
-    var porCobrar = pendientesCobro.reduce(function(s, n){ return s + Number(n.total || 0); }, 0);
+    var allAbonos = [];
+    notas.forEach(function(n){ notaAbonos(n).forEach(function(a){ allAbonos.push(a); }); });
+    var cobradoPeriodo = allAbonos.filter(function(a){ return !monthFilter || (a.fecha || "").slice(0, 7) === monthFilter; })
+      .reduce(function(s, a){ return s + Number(a.monto || 0); }, 0);
+    var totalCobradoHistorico = allAbonos.reduce(function(s, a){ return s + Number(a.monto || 0); }, 0);
+
+    var pendientesCobro = notas.filter(function(n){ return notaSaldo(n) > 0; }).sort(function(a, b){ return (a.createdAt || 0) - (b.createdAt || 0); });
+    var porCobrar = pendientesCobro.reduce(function(s, n){ return s + notaSaldo(n); }, 0);
+
+    function antiguedad(n) {
+      var days = Math.max(0, Math.floor((Date.now() - (n.createdAt || Date.now())) / 86400000));
+      if (days <= 15) return { key: "al_corriente", label: "Al corriente", days: days, cls: "stamp-hecho" };
+      if (days <= 30) return { key: "por_vencer", label: "Por vencer", days: days, cls: "stamp-en_proceso" };
+      return { key: "vencido", label: "Vencido", days: days, cls: "stamp-pendiente" };
+    }
+    var vencidoTotal = 0, porVencerTotal = 0, alCorrienteTotal = 0;
+    pendientesCobro.forEach(function(n){
+      var a = antiguedad(n), s = notaSaldo(n);
+      if (a.key === "vencido") vencidoTotal += s;
+      else if (a.key === "por_vencer") porVencerTotal += s;
+      else alCorrienteTotal += s;
+    });
 
     var totalAportado = confirmedContributions.reduce(function(s, c){ return s + Number(c.amount || 0); }, 0);
     var totalGastadoTodo = confirmedExpenses.reduce(function(s, e){ return s + Number(e.amount || 0); }, 0);
-    var totalCobradoHistorico = notas.filter(function(n){ return n.pagada; }).reduce(function(s, n){ return s + Number(n.total || 0); }, 0);
     var capitalDisponible = totalAportado + totalCobradoHistorico - totalGastadoTodo;
 
     var categoryTotals = {};
@@ -1925,15 +2166,17 @@
 
     var porCobrarHTML = pendientesCobro.length === 0
       ? '<p class="empty">No hay notas pendientes de cobro.</p>'
-      : '<table><thead><tr><th>Folio</th><th>Cliente</th><th>Fecha</th><th>Días</th><th>Total</th><th></th></tr></thead><tbody>' +
+      : '<p class="hint" style="margin:0 0 10px;">Vencido: <strong class="mono">' + currency(vencidoTotal) + '</strong> &nbsp;·&nbsp; Por vencer: <strong class="mono">' + currency(porVencerTotal) + '</strong> &nbsp;·&nbsp; Al corriente: <strong class="mono">' + currency(alCorrienteTotal) + '</strong></p>' +
+        '<table><thead><tr><th>Folio</th><th>Cliente</th><th>Fecha</th><th>Días</th><th>Estado</th><th>Saldo</th><th></th></tr></thead><tbody>' +
         pendientesCobro.map(function(n){
-          var days = Math.max(0, Math.floor((Date.now() - (n.createdAt || Date.now())) / 86400000));
+          var a = antiguedad(n);
           return '<tr>' +
             '<td class="mono" data-label="Folio">' + escapeHtml(n.folio || "") + '</td>' +
             '<td data-label="Cliente">' + escapeHtml(n.cliente || "—") + '</td>' +
             '<td data-label="Fecha">' + formatDateMX(n.fecha || (new Date(n.createdAt)).toISOString().slice(0, 10)) + '</td>' +
-            '<td class="mono' + (days > 30 ? ' overdue' : '') + '" data-label="Días">' + days + '</td>' +
-            '<td class="mono amount" data-label="Total">' + currency(n.total) + '</td>' +
+            '<td class="mono" data-label="Días">' + a.days + '</td>' +
+            '<td data-label="Estado"><span class="stamp ' + a.cls + '">' + a.label + '</span></td>' +
+            '<td class="mono amount" data-label="Saldo">' + currency(notaSaldo(n)) + '</td>' +
             '<td data-label=""><button type="button" class="btn-secondary" style="margin-top:0;" data-nota-marcarpagada="' + escapeHtml(n.id) + '">Marcar pagada</button></td>' +
           '</tr>';
         }).join("") + '</tbody></table>';
@@ -1958,7 +2201,7 @@
           '<div class="stat-card"><div class="stat-label">Gastado</div><div class="stat-value" style="font-size:18px;">' + currency(totalGastadoTodo) + '</div></div>' +
           '<div class="stat-card"><div class="stat-label">' + (capitalDisponible >= 0 ? "Capital disponible" : "Se debe a los socios") + '</div><div class="stat-value" style="font-size:18px; color:' + (capitalDisponible < 0 ? "var(--stamp-red)" : "var(--stamp-green)") + ';">' + currency(Math.abs(capitalDisponible)) + '</div></div>' +
         '</div>' +
-        '<p class="hint" style="margin:10px 0 0;">Capital disponible = aportaciones confirmadas + notas ya cobradas − gastos confirmados. Si da negativo, es lo que el negocio todavía le debe a los socios.</p>' +
+        '<p class="hint" style="margin:10px 0 0;">Capital disponible = aportaciones confirmadas + abonos de clientes ya cobrados − gastos confirmados. Si da negativo, es lo que el negocio todavía le debe a los socios.</p>' +
       '</div>' +
       '<div class="card">' +
         '<h3 class="card-title">Por cobrar — clientes que nos deben (' + pendientesCobro.length + ')</h3>' +
@@ -1982,7 +2225,10 @@
     var clearBtn = document.getElementById("balance-month-clear");
     if (clearBtn) clearBtn.addEventListener("click", function(){ state.balanceMonthFilter = ""; renderTabContent(); });
     document.querySelectorAll("[data-nota-marcarpagada]").forEach(function(btn){
-      btn.addEventListener("click", function(){ toggleNotaPagada(btn.dataset.notaMarcarpagada, true); });
+      btn.addEventListener("click", function(){
+        var n = state.notas.find(function(x){ return x.id === btn.dataset.notaMarcarpagada; });
+        if (n) addAbono(n.id, notaSaldo(n), todayISO(), "");
+      });
     });
   }
 
