@@ -519,7 +519,9 @@ export default {
         subtotal: Number(nbody.subtotal) || 0,
         iva: Number(nbody.iva) || 0,
         total: Number(nbody.total) || 0,
-        trabajo: String(nbody.trabajo || "").slice(0, 3000)
+        trabajo: String(nbody.trabajo || "").slice(0, 3000),
+        pagada: false,
+        fechaPago: null
       };
       notas = [nota].concat(notas);
       await env.HEMCI_KV.put("notas", JSON.stringify(notas));

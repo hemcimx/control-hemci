@@ -176,6 +176,7 @@
     loading: true,
     notice: null,
     gastosMonthFilter: new Date().toISOString().slice(0,7),
+    balanceMonthFilter: "",
     historialMonthFilter: "",
     tareasShowCancelled: false
   };
@@ -537,6 +538,7 @@
             tabButton("mis-pendientes", "Mis pendientes") +
             tabButton("gastos", "Gastos") +
             tabButton("aportaciones", "Aportaciones") +
+            tabButton("balance", "Balance") +
             tabButton("tareas", "Tareas") +
             tabButton("soporte", "Soporte IT") +
             tabButton("notas", "Notas") +
@@ -597,6 +599,7 @@
     if (state.tab === "mis-pendientes") return misPendientesHTML();
     if (state.tab === "gastos") return gastosHTML();
     if (state.tab === "aportaciones") return aportacionesHTML();
+    if (state.tab === "balance") return balanceHTML();
     if (state.tab === "tareas") return tareasHTML();
     if (state.tab === "soporte") return ticketsHTML();
     if (state.tab === "notas") return notasHTML();
@@ -608,6 +611,7 @@
     if (state.tab === "mis-pendientes") bindMisPendientesEvents();
     if (state.tab === "gastos") bindGastosEvents();
     if (state.tab === "aportaciones") bindAportacionesEvents();
+    if (state.tab === "balance") bindBalanceEvents();
     if (state.tab === "tareas") bindTareasEvents();
     if (state.tab === "soporte") bindTicketsEvents();
     if (state.tab === "notas") bindNotasEvents();
@@ -633,7 +637,9 @@
     var avgProgress = active.length ? Math.round(active.reduce(function(s,t){ return s + Number(t.progress || 0); }, 0) / active.length) : 0;
     var totalAportado = confirmedContributions.reduce(function(s,c){ return s + Number(c.amount || 0); }, 0);
     var totalGastadoTodo = confirmedExpenses.reduce(function(s,e){ return s + Number(e.amount || 0); }, 0);
-    var disponible = totalAportado - totalGastadoTodo;
+    var totalCobradoNotas = (state.notas || []).filter(function(n){ return n.pagada; }).reduce(function(s,n){ return s + Number(n.total || 0); }, 0);
+    var disponible = totalAportado + totalCobradoNotas - totalGastadoTodo;
+    var notasPorCobrar = (state.notas || []).filter(function(n){ return !n.pagada; }).length;
     var upcoming = state.tasks.filter(function(t){ return t.dueDate && t.status !== "hecho" && t.status !== "cancelada"; })
       .sort(function(a,b){ return a.dueDate.localeCompare(b.dueDate); }).slice(0,5);
     var feed = state.expenses.map(function(e){ return { ts: e.createdAt || 0, text: "Gasto de " + currency(e.amount) + " en " + escapeHtml(e.category) }; })
@@ -648,11 +654,13 @@
         '<p class="hint">⚠ ' + (pendingExpenses + pendingContributions) + ' movimiento(s) esperando confirmación de clave — no cuentan todavía en los totales de abajo.</p>' : '') +
       (openTickets > 0 ?
         '<p class="hint">⚠ ' + openTickets + ' reporte(s) de soporte IT sin resolver — revisa la pestaña Soporte IT.</p>' : '') +
+      (notasPorCobrar > 0 ?
+        '<p class="hint">⚠ ' + notasPorCobrar + ' nota(s) de servicio pendientes de cobro — revisa la pestaña Balance.</p>' : '') +
       '<div class="stat-grid">' +
         '<div class="stat-card"><div class="stat-label">Gastado este mes</div><div class="stat-value">' + currency(monthTotal) + '</div></div>' +
         '<div class="stat-card"><div class="stat-label">Tareas pendientes</div><div class="stat-value">' + pendientes + '</div></div>' +
         '<div class="stat-card"><div class="stat-label">Avance general</div><div class="stat-value">' + avgProgress + '%</div></div>' +
-        '<div class="stat-card"><div class="stat-label">Capital disponible</div><div class="stat-value">' + currency(disponible) + '</div></div>' +
+        '<div class="stat-card"><div class="stat-label">' + (disponible >= 0 ? "Capital disponible" : "Se debe a los socios") + '</div><div class="stat-value">' + currency(Math.abs(disponible)) + '</div></div>' +
       '</div>' +
       '<div class="two-col">' +
         '<div class="card"><h3 class="card-title">Gastos por categoría</h3>' +
@@ -1609,15 +1617,18 @@
 
     var listHTML = state.notas.length === 0
       ? '<p class="empty">Aún no hay notas emitidas.</p>'
-      : '<table><thead><tr><th>Folio</th><th>Fecha</th><th>Cliente</th><th>Total</th><th></th><th></th><th></th></tr></thead><tbody>' +
+      : '<table><thead><tr><th>Folio</th><th>Fecha</th><th>Cliente</th><th>Total</th><th>Estado</th><th></th><th></th><th></th></tr></thead><tbody>' +
         state.notas.map(function(n){
           return '<tr>' +
             '<td class="mono" data-label="Folio">' + escapeHtml(n.folio || "") + (n.updatedAt ? ' <span class="hint" style="margin:0;">(editada)</span>' : '') + '</td>' +
             '<td data-label="Fecha">' + formatDateMX(n.fecha || (new Date(n.createdAt)).toISOString().slice(0, 10)) + '</td>' +
             '<td data-label="Cliente">' + escapeHtml(n.cliente || "—") + '</td>' +
             '<td class="mono amount" data-label="Total">' + currency(n.total) + '</td>' +
-            '<td data-label=""><button type="button" class="link-btn" data-nota-edit="' + escapeHtml(n.id) + '">Editar</button></td>' +
-            '<td data-label=""><button type="button" class="link-btn" data-nota-pdf="' + escapeHtml(n.id) + '">PDF</button></td>' +
+            '<td data-label="Estado">' + (n.pagada
+              ? '<span class="stamp stamp-hecho">Pagada</span>'
+              : '<span class="stamp stamp-pendiente">Por cobrar</span>') + '</td>' +
+            '<td data-label=""><button type="button" class="link-btn" data-nota-togglepago="' + escapeHtml(n.id) + '" data-pagada="' + (n.pagada ? "1" : "0") + '">' + (n.pagada ? "Marcar pendiente" : "Marcar pagada") + '</button></td>' +
+            '<td data-label=""><button type="button" class="link-btn" data-nota-edit="' + escapeHtml(n.id) + '">Editar</button> · <button type="button" class="link-btn" data-nota-pdf="' + escapeHtml(n.id) + '">PDF</button></td>' +
             '<td data-label=""><button class="icon-btn" data-nota-del="' + escapeHtml(n.id) + '" aria-label="Eliminar nota">✕ Eliminar</button></td>' +
           '</tr>';
         }).join("") + '</tbody></table>';
@@ -1766,6 +1777,11 @@
     document.querySelectorAll("[data-nota-edit]").forEach(function(btn){
       btn.addEventListener("click", function(){ startEditNota(btn.dataset.notaEdit); });
     });
+    document.querySelectorAll("[data-nota-togglepago]").forEach(function(btn){
+      btn.addEventListener("click", function(){
+        toggleNotaPagada(btn.dataset.notaTogglepago, btn.dataset.pagada !== "1");
+      });
+    });
     var cancelEdit = document.getElementById("nota-canceledit");
     if (cancelEdit) cancelEdit.addEventListener("click", function(){
       state.notaDraft = defaultNotaDraft();
@@ -1862,6 +1878,112 @@
     await saveKey("notas", state.notas);
     if (removed) logActivity("Nota de servicio " + (removed.folio || "") + " eliminada");
     renderTabContent();
+  }
+
+  async function toggleNotaPagada(id, pagada) {
+    var idx = state.notas.findIndex(function(n){ return n.id === id; });
+    if (idx === -1) return;
+    var next = state.notas.slice();
+    next[idx] = Object.assign({}, next[idx], { pagada: !!pagada, fechaPago: pagada ? todayISO() : null });
+    var ok = await saveKey("notas", next);
+    if (!ok) { flash("No se pudo actualizar la nota.", true); return; }
+    state.notas = next;
+    logActivity("Nota " + (next[idx].folio || "") + (pagada ? " marcada como pagada" : " marcada como pendiente de cobro"));
+    flash(pagada ? "Nota marcada como pagada." : "Nota marcada como pendiente de cobro.");
+    renderTabContent();
+  }
+
+  // ---------- Balance ----------
+  function balanceHTML() {
+    var monthFilter = state.balanceMonthFilter;
+    var notas = state.notas || [];
+    var confirmedExpenses = state.expenses.filter(isFullyConfirmed);
+    var confirmedContributions = state.contributions.filter(isFullyConfirmed);
+
+    var periodExpenses = confirmedExpenses.filter(function(e){ return !monthFilter || (e.date && e.date.slice(0, 7) === monthFilter); });
+    var gastosPeriodo = periodExpenses.reduce(function(s, e){ return s + Number(e.amount || 0); }, 0);
+
+    var periodNotas = notas.filter(function(n){
+      var f = n.fecha || (n.createdAt ? (new Date(n.createdAt)).toISOString().slice(0, 10) : "");
+      return !monthFilter || f.slice(0, 7) === monthFilter;
+    });
+    var facturadoPeriodo = periodNotas.reduce(function(s, n){ return s + Number(n.total || 0); }, 0);
+    var cobradoPeriodo = periodNotas.filter(function(n){ return n.pagada; }).reduce(function(s, n){ return s + Number(n.total || 0); }, 0);
+
+    var pendientesCobro = notas.filter(function(n){ return !n.pagada; }).sort(function(a, b){ return (a.createdAt || 0) - (b.createdAt || 0); });
+    var porCobrar = pendientesCobro.reduce(function(s, n){ return s + Number(n.total || 0); }, 0);
+
+    var totalAportado = confirmedContributions.reduce(function(s, c){ return s + Number(c.amount || 0); }, 0);
+    var totalGastadoTodo = confirmedExpenses.reduce(function(s, e){ return s + Number(e.amount || 0); }, 0);
+    var totalCobradoHistorico = notas.filter(function(n){ return n.pagada; }).reduce(function(s, n){ return s + Number(n.total || 0); }, 0);
+    var capitalDisponible = totalAportado + totalCobradoHistorico - totalGastadoTodo;
+
+    var categoryTotals = {};
+    periodExpenses.forEach(function(e){ categoryTotals[e.category] = (categoryTotals[e.category] || 0) + Number(e.amount || 0); });
+    var topCategories = Object.entries(categoryTotals).sort(function(a, b){ return b[1] - a[1]; });
+    var maxCat = topCategories.length ? topCategories[0][1] : 1;
+
+    var porCobrarHTML = pendientesCobro.length === 0
+      ? '<p class="empty">No hay notas pendientes de cobro.</p>'
+      : '<table><thead><tr><th>Folio</th><th>Cliente</th><th>Fecha</th><th>Días</th><th>Total</th><th></th></tr></thead><tbody>' +
+        pendientesCobro.map(function(n){
+          var days = Math.max(0, Math.floor((Date.now() - (n.createdAt || Date.now())) / 86400000));
+          return '<tr>' +
+            '<td class="mono" data-label="Folio">' + escapeHtml(n.folio || "") + '</td>' +
+            '<td data-label="Cliente">' + escapeHtml(n.cliente || "—") + '</td>' +
+            '<td data-label="Fecha">' + formatDateMX(n.fecha || (new Date(n.createdAt)).toISOString().slice(0, 10)) + '</td>' +
+            '<td class="mono' + (days > 30 ? ' overdue' : '') + '" data-label="Días">' + days + '</td>' +
+            '<td class="mono amount" data-label="Total">' + currency(n.total) + '</td>' +
+            '<td data-label=""><button type="button" class="btn-secondary" style="margin-top:0;" data-nota-marcarpagada="' + escapeHtml(n.id) + '">Marcar pagada</button></td>' +
+          '</tr>';
+        }).join("") + '</tbody></table>';
+
+    return (
+      '<h2 class="panel-title">Balance</h2>' +
+      '<div class="list-header">' +
+        '<input type="month" id="balance-month-filter" value="' + escapeHtml(monthFilter) + '" />' +
+        '<button type="button" class="btn-secondary" style="margin-top:0;" id="balance-month-clear">Ver histórico completo</button>' +
+      '</div>' +
+      '<div class="stat-grid">' +
+        '<div class="stat-card"><div class="stat-label">Facturado' + (monthFilter ? " (mes)" : " (histórico)") + '</div><div class="stat-value">' + currency(facturadoPeriodo) + '</div></div>' +
+        '<div class="stat-card"><div class="stat-label">Cobrado' + (monthFilter ? " (mes)" : " (histórico)") + '</div><div class="stat-value">' + currency(cobradoPeriodo) + '</div></div>' +
+        '<div class="stat-card"><div class="stat-label">Nos deben (por cobrar)</div><div class="stat-value" style="color:' + (porCobrar > 0 ? "var(--stamp-red)" : "inherit") + ';">' + currency(porCobrar) + '</div></div>' +
+        '<div class="stat-card"><div class="stat-label">Gastos' + (monthFilter ? " (mes)" : " (histórico)") + '</div><div class="stat-value">' + currency(gastosPeriodo) + '</div></div>' +
+      '</div>' +
+      '<div class="card">' +
+        '<h3 class="card-title">Capital de los socios (histórico, sin filtro de mes)</h3>' +
+        '<div class="stat-grid">' +
+          '<div class="stat-card"><div class="stat-label">Aportado</div><div class="stat-value" style="font-size:18px;">' + currency(totalAportado) + '</div></div>' +
+          '<div class="stat-card"><div class="stat-label">Cobrado de clientes</div><div class="stat-value" style="font-size:18px;">' + currency(totalCobradoHistorico) + '</div></div>' +
+          '<div class="stat-card"><div class="stat-label">Gastado</div><div class="stat-value" style="font-size:18px;">' + currency(totalGastadoTodo) + '</div></div>' +
+          '<div class="stat-card"><div class="stat-label">' + (capitalDisponible >= 0 ? "Capital disponible" : "Se debe a los socios") + '</div><div class="stat-value" style="font-size:18px; color:' + (capitalDisponible < 0 ? "var(--stamp-red)" : "var(--stamp-green)") + ';">' + currency(Math.abs(capitalDisponible)) + '</div></div>' +
+        '</div>' +
+        '<p class="hint" style="margin:10px 0 0;">Capital disponible = aportaciones confirmadas + notas ya cobradas − gastos confirmados. Si da negativo, es lo que el negocio todavía le debe a los socios.</p>' +
+      '</div>' +
+      '<div class="card">' +
+        '<h3 class="card-title">Por cobrar — clientes que nos deben (' + pendientesCobro.length + ')</h3>' +
+        porCobrarHTML +
+      '</div>' +
+      '<div class="card">' +
+        '<h3 class="card-title">Gastos por categoría' + (monthFilter ? "" : " — histórico completo") + '</h3>' +
+        (topCategories.length === 0 ? '<p class="empty">Sin gastos en este periodo.</p>' :
+          topCategories.map(function(entry){
+            return '<div class="cat-bar-row"><span class="cat-bar-label">' + escapeHtml(entry[0]) + '</span>' +
+              '<div class="cat-bar-track"><div class="cat-bar-fill" style="width:' + ((entry[1] / maxCat) * 100) + '%"></div></div>' +
+              '<span class="cat-bar-value mono">' + currency(entry[1]) + '</span></div>';
+          }).join("")) +
+      '</div>'
+    );
+  }
+
+  function bindBalanceEvents() {
+    var mf = document.getElementById("balance-month-filter");
+    if (mf) mf.addEventListener("change", function(e){ state.balanceMonthFilter = e.target.value; renderTabContent(); });
+    var clearBtn = document.getElementById("balance-month-clear");
+    if (clearBtn) clearBtn.addEventListener("click", function(){ state.balanceMonthFilter = ""; renderTabContent(); });
+    document.querySelectorAll("[data-nota-marcarpagada]").forEach(function(btn){
+      btn.addEventListener("click", function(){ toggleNotaPagada(btn.dataset.notaMarcarpagada, true); });
+    });
   }
 
   function generateNotaPDF(n) {
