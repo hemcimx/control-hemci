@@ -2751,6 +2751,27 @@
     if (mf) mf.addEventListener("change", function(e){ state.balanceMonthFilter = e.target.value; renderTabContent(); });
     var clearBtn = document.getElementById("balance-month-clear");
     if (clearBtn) clearBtn.addEventListener("click", function(){ state.balanceMonthFilter = ""; renderTabContent(); });
+    document.querySelectorAll("[data-socio-reembolso]").forEach(function(btn){
+      btn.addEventListener("click", function(){
+        var id = btn.dataset.socioReembolso;
+        var c = cuentaSocio(id);
+        state.tab = "gastos";
+        state.gastoEditId = null;
+        document.querySelectorAll(".tab").forEach(function(b){ b.classList.toggle("tab-active", b.dataset.tab === "gastos"); });
+        renderTabContent();
+        var f = document.getElementById("expense-form");
+        f.elements["tipo"].value = "pago_equipo";
+        f.elements["beneficiario"].value = id;
+        f.elements["concepto"].value = "Reembolso de gastos";
+        f.elements["amount"].value = c.reembolsoPendiente;
+        f.elements["description"].value = "Reembolso de gastos pagados de su bolsillo";
+        if (state.team.some(function(m){ return m.id === state.authId; })) f.elements["paidBy"].value = state.authId;
+        f.elements["date"].value = todayISO();
+        applyGastoTipo();
+        try { window.scrollTo(0, 0); } catch (err) {}
+        flash("Pago preparado: revisa método y fecha, adjunta el comprobante si quieres y regístralo. Luego los socios lo confirman con clave.");
+      });
+    });
     var mes = state.balanceMonthFilter;
     var corteCerrar = document.getElementById("corte-cerrar-btn");
     if (corteCerrar) corteCerrar.addEventListener("click", function(){ cerrarMes(mes); });
@@ -2769,19 +2790,30 @@
   }
 
   // ---------- Reparto del mes ----------
-  var REPARTO_DEFAULT = [
-    { nombre: "Reinversión en la empresa", pct: 40, modo: "apartado" },
-    { nombre: "Tu sueldo como trabajador", pct: 30, modo: "pago:Sueldo" },
-    { nombre: "Fondo de emergencia", pct: 20, modo: "apartado" },
-    { nombre: "Ganancia adicional del propietario", pct: 10, modo: "pago:Retiro de utilidades" }
-  ];
+  var REPARTO_VIEJO = [["Reinversión en la empresa", 40], ["Tu sueldo como trabajador", 30], ["Fondo de emergencia", 20], ["Ganancia adicional del propietario", 10]];
+  var REPARTO_VIEJO_MODOS = ["apartado", "pago:Sueldo", "apartado", "pago:Retiro de utilidades"];
+  function repartoParaDefault() {
+    return (state.team.find(function(m){ return m.id === state.authId; }) || state.team[0] || {}).id || "";
+  }
+  // Sueldo (30%) y ganancia (10%) se dividen en partes iguales: una por cada trabajador (15/15 y 5/5 con dos socios).
+  function repartoDefault() {
+    var team = state.team.length ? state.team : [{ id: "", name: "Trabajador" }];
+    var n = team.length;
+    var out = [{ id: "reinversion", nombre: "Reinversión en la empresa", pct: 40, modo: "apartado", para: repartoParaDefault() }];
+    team.forEach(function(m){ out.push({ id: "sueldo-" + m.id, nombre: "Sueldo — " + m.name, pct: r2(30 / n), modo: "pago:Sueldo", para: m.id }); });
+    out.push({ id: "fondo", nombre: "Fondo de emergencia", pct: 20, modo: "apartado", para: repartoParaDefault() });
+    team.forEach(function(m){ out.push({ id: "ganancia-" + m.id, nombre: "Ganancia — " + m.name, pct: r2(10 / n), modo: "pago:Retiro de utilidades", para: m.id }); });
+    return out;
+  }
+  function repartoEsViejoDefault(saved) {
+    return saved.length === 4 && saved.every(function(p, i){ return p.nombre === REPARTO_VIEJO[i][0] && Number(p.pct) === REPARTO_VIEJO[i][1]; });
+  }
   function repartoPcts() {
     var saved = state.settings && state.settings.repartoPct;
-    var base = (saved && saved.length) ? saved : REPARTO_DEFAULT;
-    var fallbackPara = (state.team.find(function(m){ return m.id === state.authId; }) || state.team[0] || {}).id || "";
+    var base = (saved && saved.length && !repartoEsViejoDefault(saved)) ? saved : repartoDefault();
+    var fallbackPara = repartoParaDefault();
     return base.map(function(p, i){
-      var d = REPARTO_DEFAULT[i] || {};
-      return { nombre: p.nombre, pct: Number(p.pct) || 0, modo: p.modo || d.modo || "apartado", para: p.para || fallbackPara };
+      return { id: p.id || ("b" + i), nombre: p.nombre, pct: Number(p.pct) || 0, modo: p.modo || REPARTO_VIEJO_MODOS[i] || "apartado", para: p.para || fallbackPara };
     });
   }
   function fechaEnMes(mes) {
@@ -2827,7 +2859,10 @@
       var sinConf = sumAmounts(mine.filter(function(e){ return !isFullyConfirmed(e); }));
       return { tipo: "pago", concepto: concepto, pagado: r2(pagado), sinConf: r2(sinConf), falta: Math.max(0, r2(monto - pagado - sinConf)) };
     }
-    var ap = Number((plan.apartado || {})[i]) || 0;
+    var apMap = plan.apartado || {};
+    var ap = Number(apMap[p.id]);
+    if (!(ap >= 0)) { var legacyKey = p.id === "reinversion" ? "0" : (p.id === "fondo" ? "2" : null); ap = legacyKey ? Number(apMap[legacyKey]) : 0; }
+    ap = ap || 0;
     return { tipo: "apartado", apartado: r2(ap), falta: Math.max(0, r2(monto - ap)) };
   }
   function estadoTexto(est) {
@@ -2925,7 +2960,7 @@
         '<td data-label="Se registra como"><select class="rp-sel" data-rp-modo="' + i + '">' + modoOpts(p.modo) + '</select>' +
           (esPago ? '<select class="rp-sel" data-rp-para="' + i + '" style="margin-top:4px;" aria-label="Para quién">' + paraOpts(p.para) + '</select>' : '') + '</td>' +
         '<td data-label="Estado" class="hint" id="rp-be-' + i + '" style="margin:0;">' + escapeHtml(estadoTexto(b.est)) + '</td>' +
-        '<td data-label="">' + accion + '</td></tr>';
+        '<td data-label="">' + accion + ' <button type="button" class="icon-btn" data-rp-del="' + i + '" aria-label="Quitar destino">✕</button></td></tr>';
     }).join("");
 
     return (
@@ -2977,6 +3012,8 @@
         line("Disponible para repartir", '<span class="mono" id="rp-disp" style="font-size:18px; color:' + (r.disponible < 0 ? "var(--stamp-red)" : "var(--stamp-green)") + ';">' + currency(r.disponible) + '</span>', true) +
         '<p class="hint" id="rp-neg" style="margin:6px 0 10px; color:var(--stamp-red);' + (r.disponible < 0 ? "" : " display:none;") + '">⚠ Los apartados superan el ingreso: no queda nada que repartir este mes. Revisa gastos o el monto de ingreso.</p>' +
         '<div style="overflow-x:auto;"><table style="margin-top:8px;"><thead><tr><th>Destino</th><th style="width:90px;">%</th><th style="width:130px;">Te toca</th><th style="width:230px;">Se registra como</th><th style="width:210px;">Estado</th><th style="width:200px;"></th></tr></thead><tbody>' + bucketRows + '</tbody></table></div>' +
+        '<div style="display:flex; gap:10px; flex-wrap:wrap; margin-top:10px;"><button type="button" class="btn-secondary" id="rp-add-bucket">+ Agregar destino</button>' +
+          '<button type="button" class="btn-secondary" id="rp-reset-buckets">Restaurar reparto sugerido (por trabajador)</button></div>' +
         '<div style="display:flex; justify-content:space-between; gap:12px; flex-wrap:wrap; margin-top:8px;">' +
           '<span class="hint" id="rp-pctsum" style="margin:0; color:' + (r.pctSum === 100 ? "var(--stamp-green)" : "var(--stamp-red)") + ';">Los porcentajes suman ' + r.pctSum + '%' + (r.pctSum === 100 ? " ✓" : " — deben sumar 100%") + '</span>' +
           '<span class="hint" style="margin:0;">Pagos al equipo ya registrados en Gastos este mes: <strong class="mono">' + currency(pagosEquipoMes) + '</strong></span>' +
@@ -3011,6 +3048,7 @@
       var modoEl = document.querySelector('[data-rp-modo="' + i + '"]');
       var paraEl = document.querySelector('[data-rp-para="' + i + '"]');
       pcts[i] = {
+        id: current[i] ? current[i].id : uid(),
         nombre: document.querySelector('[data-rp-name="' + i + '"]').value,
         pct: Number(inp.value) || 0,
         modo: modoEl ? modoEl.value : (current[i] ? current[i].modo : "apartado"),
@@ -3147,13 +3185,37 @@
         }, null);
       });
     });
+    document.getElementById("rp-add-bucket").addEventListener("click", async function(){
+      var pcts = syncRepartoFromDOM();
+      pcts.push({ id: uid(), nombre: "Nuevo destino", pct: 0, modo: "apartado", para: repartoParaDefault() });
+      await saveKey("repartos", state.repartos);
+      await saveSettings(Object.assign({}, state.settings, { repartoPct: pcts }));
+      renderTabContent();
+    });
+    document.querySelectorAll("[data-rp-del]").forEach(function(btn){
+      btn.addEventListener("click", async function(){
+        if (!confirm("¿Quitar este destino del reparto?")) return;
+        var pcts = syncRepartoFromDOM();
+        pcts.splice(Number(btn.dataset.rpDel), 1);
+        await saveKey("repartos", state.repartos);
+        await saveSettings(Object.assign({}, state.settings, { repartoPct: pcts }));
+        renderTabContent();
+      });
+    });
+    document.getElementById("rp-reset-buckets").addEventListener("click", async function(){
+      if (!confirm("¿Restaurar el reparto sugerido? Se pierden los porcentajes y destinos que hayas cambiado.\n\nQueda: Reinversión 40%, sueldo de cada trabajador 15% y 15%, Fondo de emergencia 20%, ganancia de cada trabajador 5% y 5%.")) return;
+      syncRepartoFromDOM();
+      await saveKey("repartos", state.repartos);
+      await saveSettings(Object.assign({}, state.settings, { repartoPct: repartoDefault() }));
+      renderTabContent();
+    });
     document.querySelectorAll("[data-rp-apartar]").forEach(function(btn){
       btn.addEventListener("click", async function(){
         var i = Number(btn.dataset.rpApartar);
         var pcts = syncRepartoFromDOM();
         var plan = getRepartoPlan(mes);
         var r = repartoCalc(mes, plan, pcts);
-        plan.apartado[i] = r.buckets[i].monto;
+        plan.apartado[pcts[i].id] = r.buckets[i].monto;
         await persistReparto(true);
         flash("Marcado como apartado: " + currency(r.buckets[i].monto) + ".");
         renderTabContent();
@@ -3161,8 +3223,12 @@
     });
     document.querySelectorAll("[data-rp-desapartar]").forEach(function(btn){
       btn.addEventListener("click", async function(){
-        syncRepartoFromDOM();
-        delete getRepartoPlan(mes).apartado[Number(btn.dataset.rpDesapartar)];
+        var pcts = syncRepartoFromDOM();
+        var pid = pcts[Number(btn.dataset.rpDesapartar)].id;
+        var apMap = getRepartoPlan(mes).apartado;
+        delete apMap[pid];
+        if (pid === "reinversion") delete apMap["0"];
+        if (pid === "fondo") delete apMap["2"];
         await persistReparto(true);
         renderTabContent();
       });
@@ -3247,11 +3313,12 @@
         '<td class="mono" data-label="Gastos de su bolsillo">' + currency(c.bolsillo) + '</td>' +
         '<td class="mono" data-label="Reembolsos recibidos">' + currency(c.reembolsado) + '</td>' +
         '<td class="mono" data-label="Anticipos pendientes">' + currency(c.anticipoPendiente) + '</td>' +
-        '<td data-label="Saldo">' + saldo + '</td></tr>';
+        '<td data-label="Saldo">' + saldo + '</td>' +
+        '<td data-label="">' + (c.reembolsoPendiente > 0 ? '<button type="button" class="btn-secondary" style="margin-top:0;" data-socio-reembolso="' + escapeHtml(m.id) + '">Registrar reembolso</button>' : '') + '</td></tr>';
     }).join("");
     return '<div class="card"><h3 class="card-title">Cuentas con los socios</h3>' +
-      '<table><thead><tr><th>Socio</th><th>Gastos de su bolsillo</th><th>Reembolsos recibidos</th><th>Anticipos pendientes</th><th>Saldo</th></tr></thead><tbody>' + rows + '</tbody></table>' +
-      '<p class="hint" style="margin:10px 0 0;">Se llena al marcar "Lo pagó un socio de su bolsillo" en un gasto, y al registrar pagos al equipo con concepto "Reembolso de gastos" o "Anticipo" (descontando el anticipo en el siguiente sueldo).</p></div>';
+      '<table><thead><tr><th>Socio</th><th>Gastos de su bolsillo</th><th>Reembolsos recibidos</th><th>Anticipos pendientes</th><th>Saldo</th><th></th></tr></thead><tbody>' + rows + '</tbody></table>' +
+      '<p class="hint" style="margin:10px 0 0;">Para saldar lo que se le debe a un socio, usa <strong>Registrar reembolso</strong>: te lleva a Gastos con el pago ya preparado (Pago al equipo, concepto "Reembolso de gastos"). El saldo baja cuando los socios lo confirman con clave. También se llena al marcar "Lo pagó un socio de su bolsillo" en un gasto, y con pagos de concepto "Anticipo" (que se descuentan en el siguiente sueldo).</p></div>';
   }
 
   function corteCardHTML(mes) {
