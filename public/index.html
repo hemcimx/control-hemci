@@ -184,6 +184,7 @@
     notice: null,
     gastosMonthFilter: new Date().toISOString().slice(0,7),
     gastosTipoFilter: "todos",
+    gastoEditId: null,
     gastosFacturaFilter: "todas",
     recurrentes: [],
     cierres: [],
@@ -900,7 +901,7 @@
     var bits = [];
     if (e.metodo) bits.push(escapeHtml(e.metodo));
     if (e.tipo !== "pago_equipo") {
-      if (!esPagoSat(e)) bits.push(e.conFactura ? "Con factura" + (Number(e.iva) > 0 ? " (IVA " + currency(e.iva) + ")" : "") : "Sin factura");
+      if (!esPagoSat(e)) bits.push((e.conFactura ? "Con factura" : "Sin factura") + (Number(e.iva) > 0 ? " · IVA " + currency(e.iva) + (e.conFactura ? "" : " (no acreditable)") : ""));
       if (e.cliente) bits.push("Cliente: " + escapeHtml(e.cliente));
       if (e.deBolsillo) bits.push("De bolsillo de " + escapeHtml(memberName(e.paidBy)));
     } else if (Number(e.descuentoAnticipo) > 0) {
@@ -961,7 +962,7 @@
       description: src.description || "", cliente: src.cliente || ""
     };
     if (src.tipo === "pago_equipo") { t.beneficiario = src.beneficiario; t.concepto = src.concepto; }
-    else { t.conFactura = !!src.conFactura; t.ivaRate = src.ivaRate; t.deBolsillo = !!src.deBolsillo; }
+    else { t.conFactura = !!src.conFactura; t.ivaRate = Number(src.iva) > 0 ? src.ivaRate : 0; t.deBolsillo = !!src.deBolsillo; }
     if (!(await saveRecurrentes(state.recurrentes.concat([t])))) return;
     if ((src.date || "").slice(0, 7) === todayISO().slice(0, 7) && !src.recurrenteId) {
       state.expenses = state.expenses.map(function(x){ return x.id === src.id ? Object.assign({}, x, { recurrenteId: t.id }) : x; });
@@ -980,7 +981,8 @@
     if (t.cliente) exp.cliente = t.cliente;
     if (t.tipo === "pago_equipo") { exp.tipo = "pago_equipo"; exp.beneficiario = t.beneficiario; exp.concepto = t.concepto; }
     else {
-      if (t.conFactura) { exp.conFactura = true; exp.ivaRate = t.ivaRate; exp.iva = ivaFromAmount(t.amount, t.ivaRate); }
+      if (t.conFactura) exp.conFactura = true;
+      if (Number(t.ivaRate) > 0) { exp.ivaRate = t.ivaRate; exp.iva = ivaFromAmount(t.amount, t.ivaRate); }
       if (t.deBolsillo) exp.deBolsillo = true;
     }
     await addExpense(exp, null);
@@ -1023,17 +1025,26 @@
     var conFacturaList = gastosOnly.filter(function(e){ return e.conFactura; });
     var sinFacturaList = gastosOnly.filter(function(e){ return !e.conFactura; });
     var ivaAcred = conFacturaList.reduce(function(s, e){ return s + Number(e.iva || 0); }, 0);
+    var ivaSinFactura = sinFacturaList.reduce(function(s, e){ return s + Number(e.iva || 0); }, 0);
     var porMetodo = {};
     confirmedFiltered.forEach(function(e){ var k = e.metodo || "Sin dato"; porMetodo[k] = (porMetodo[k] || 0) + Number(e.amount || 0); });
     var metodoLine = Object.keys(porMetodo).map(function(k){ return escapeHtml(k) + ' <strong class="mono">' + currency(porMetodo[k]) + '</strong>'; }).join(' &nbsp;·&nbsp; ');
     var resumenLine = confirmedFiltered.length === 0 ? "" :
       '<p class="hint" style="margin:0 0 10px;">' +
-        (tipoFilter !== "pago_equipo" ? 'Con factura <strong class="mono">' + currency(sumAmounts(conFacturaList)) + '</strong> (IVA acreditable <strong class="mono">' + currency(ivaAcred) + '</strong>) &nbsp;·&nbsp; Sin factura <strong class="mono">' + currency(sumAmounts(sinFacturaList)) + '</strong><br>' : '') +
+        (tipoFilter !== "pago_equipo" ? 'Con factura <strong class="mono">' + currency(sumAmounts(conFacturaList)) + '</strong> (IVA acreditable <strong class="mono">' + currency(ivaAcred) + '</strong>) &nbsp;·&nbsp; Sin factura <strong class="mono">' + currency(sumAmounts(sinFacturaList)) + '</strong>' + (ivaSinFactura > 0 ? ' (IVA pagado sin factura, no acreditable: <strong class="mono">' + currency(ivaSinFactura) + '</strong>)' : '') + '<br>' : '') +
         'Por método: ' + metodoLine +
       '</p>';
     var categoryOptions = CATEGORIES.filter(function(c){ return c !== CAT_EQUIPO; }).map(function(c){ return '<option value="' + escapeHtml(c) + '">' + escapeHtml(c) + '</option>'; }).join("");
     var metodoOptions = METODOS_PAGO.map(function(m){ return '<option value="' + escapeHtml(m) + '">' + escapeHtml(m) + '</option>'; }).join("");
     var clienteOptions = clientesConocidos().map(function(c){ return '<option value="' + escapeHtml(c) + '"></option>'; }).join("");
+    var editingExp = state.gastoEditId ? state.expenses.find(function(x){ return x.id === state.gastoEditId; }) : null;
+    if (state.gastoEditId && !editingExp) state.gastoEditId = null;
+    var editBanner = editingExp
+      ? '<div class="card" style="background:var(--paper-dark); display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap;">' +
+          '<span>Editando el registro del <strong>' + formatDateMX(editingExp.date) + '</strong> por <strong class="mono">' + currency(editingExp.amount) + '</strong>. ' +
+          '<span class="hint" style="margin:0;">Si cambias monto, fecha, categoría o quién paga, se pedirá confirmar de nuevo con clave. Para cambiar la foto, elige una nueva abajo.</span></span>' +
+          '<button type="button" class="link-btn" id="gasto-canceledit">Cancelar edición</button></div>'
+      : '';
     var recPend = recurrentesPendientes();
     var recBanner = recPend.length === 0 ? "" :
       '<p class="hint" style="color:var(--stamp-red);">⚠ ' + recPend.length + ' gasto(s) recurrente(s) sin registrar este mes: <strong>' +
@@ -1048,6 +1059,7 @@
     return (
       '<h2 class="panel-title">Gastos y salidas de dinero</h2>' +
       recBanner +
+      editBanner +
       '<form class="card form-grid" id="expense-form">' +
         '<label class="span-2">Tipo de salida<select name="tipo">' +
           '<option value="gasto">Gasto de la empresa (renta, software, impuestos, proveedores…)</option>' +
@@ -1060,8 +1072,9 @@
         '<label>Pagó (quién hizo el pago)<select name="paidBy">' + teamOptions + '</select></label>' +
         '<label>Método de pago<select name="metodo">' + metodoOptions + '</select></label>' +
         '<label>Fecha<input type="date" name="date" value="' + todayISO() + '" /></label>' +
-        '<label data-only-gasto style="flex-direction:row; align-items:center; gap:8px; font-size:13px;"><input type="checkbox" name="conFactura" style="width:auto;" /> Tengo factura (CFDI) de este gasto</label>' +
-        '<label data-only-factura style="display:none;">IVA incluido en el monto<select name="ivaTasa"><option value="16">16 %</option><option value="0">Exento / 0 %</option></select></label>' +
+        '<label data-only-gasto style="flex-direction:row; align-items:center; gap:8px; font-size:13px;"><input type="checkbox" name="conIva" style="width:auto;" /> Me cobraron IVA (el monto ya lo incluye)</label>' +
+        '<label data-only-iva style="display:none;">Tasa de IVA incluida en el monto<select name="ivaTasa"><option value="16">16 %</option><option value="8">8 % (frontera)</option></select></label>' +
+        '<label data-only-gasto style="flex-direction:row; align-items:center; gap:8px; font-size:13px;"><input type="checkbox" name="conFactura" style="width:auto;" /> Tengo factura (CFDI) — necesaria para acreditar el IVA</label>' +
         '<label data-only-gasto style="flex-direction:row; align-items:center; gap:8px; font-size:13px;"><input type="checkbox" name="deBolsillo" style="width:auto;" /> Lo pagó un socio de su bolsillo (la empresa le debe reembolso)</label>' +
         '<label data-only-gasto>Cliente / proyecto (opcional)<input type="text" name="cliente" list="clientes-list" placeholder="Ej. HEMCI" /><datalist id="clientes-list">' + clienteOptions + '</datalist></label>' +
         '<label data-only-equipo style="display:none;">Descontar de anticipo pendiente (opcional)<input type="number" min="0" step="0.01" name="descuentoAnticipo" placeholder="0.00" /><span class="hint" id="anticipo-hint" style="margin:0;"></span></label>' +
@@ -1098,7 +1111,7 @@
               '<td data-label="Estado">' + confirmStampHTML(e) + confirmControlHTML(e, "expenses") + '</td>' +
               '<td data-label="Recibo">' + (e.hasReceipt ?
                 ('<button type="button" class="link-btn" data-view-receipt="' + e.id + '">Ver recibo</button><div id="receipt-' + e.id + '" style="display:none; margin-top:6px;"></div>') : '—') + '</td>' +
-              '<td data-label=""><button type="button" class="link-btn" data-repeat-expense="' + e.id + '">Repetir</button> · <button type="button" class="link-btn" data-make-recurrente="' + e.id + '">Hacer recurrente</button> · <button class="icon-btn" data-delete-expense="' + e.id + '" aria-label="Eliminar registro">✕ Eliminar</button></td></tr>';
+              '<td data-label=""><button type="button" class="link-btn" data-edit-expense="' + e.id + '">Editar</button> · <button type="button" class="link-btn" data-repeat-expense="' + e.id + '">Repetir</button> · <button type="button" class="link-btn" data-make-recurrente="' + e.id + '">Hacer recurrente</button> · <button class="icon-btn" data-delete-expense="' + e.id + '" aria-label="Eliminar registro">✕ Eliminar</button></td></tr>';
           }).join("") + '</tbody></table>') +
       '</div>' +
       '<details class="card" id="budgets-details"' + (state.presupuestosAbierto ? " open" : "") + '>' +
@@ -1108,16 +1121,79 @@
       '</details>'
     );
   }
+  function fillExpenseForm(src, forEdit) {
+    var f = document.getElementById("expense-form");
+    if (!f) return;
+    var esEq = src.tipo === "pago_equipo";
+    f.elements["tipo"].value = esEq ? "pago_equipo" : "gasto";
+    f.elements["amount"].value = src.amount;
+    if (!esEq) f.elements["category"].value = src.category;
+    f.elements["paidBy"].value = src.paidBy;
+    if (src.metodo) f.elements["metodo"].value = src.metodo;
+    var tieneIva = !esEq && Number(src.iva) > 0;
+    f.elements["conIva"].checked = tieneIva;
+    if (tieneIva) f.elements["ivaTasa"].value = String(src.ivaRate != null ? src.ivaRate : 16);
+    f.elements["conFactura"].checked = !esEq && !!src.conFactura;
+    f.elements["deBolsillo"].checked = !esEq && !!src.deBolsillo;
+    f.elements["cliente"].value = (!esEq && src.cliente) || "";
+    f.elements["descuentoAnticipo"].value = (forEdit && esEq && src.descuentoAnticipo) ? src.descuentoAnticipo : "";
+    if (esEq) {
+      f.elements["beneficiario"].value = src.beneficiario;
+      f.elements["concepto"].value = src.concepto || CONCEPTOS_EQUIPO[0];
+    }
+    f.elements["description"].value = src.description || "";
+    f.elements["date"].value = forEdit ? (src.date || todayISO()) : todayISO();
+    applyGastoTipo();
+  }
+
+  function startEditExpense(id) {
+    var src = state.expenses.find(function(x){ return x.id === id; });
+    if (!src) { flash("Ese registro ya no existe.", true); return; }
+    state.gastoEditId = id;
+    renderTabContent();
+    fillExpenseForm(src, true);
+    try { window.scrollTo(0, 0); } catch (err) {}
+  }
+
+  async function updateExpense(id, exp, photoDataUrl) {
+    var idx = state.expenses.findIndex(function(x){ return x.id === id; });
+    if (idx === -1) { flash("Ese registro ya no existe.", true); state.gastoEditId = null; renderTabContent(); return; }
+    var old = state.expenses[idx];
+    if (isMesCerrado(old.date) || isMesCerrado(exp.date)) {
+      flash("El mes " + mesLabel(((isMesCerrado(old.date) ? old.date : exp.date) || "").slice(0, 7)) + " está cerrado. Reábrelo en Balance para editar movimientos de ese mes.", true);
+      return;
+    }
+    var next = Object.assign({}, old);
+    ["tipo", "beneficiario", "concepto", "descuentoAnticipo", "conFactura", "ivaRate", "iva", "deBolsillo", "cliente"].forEach(function(k){ delete next[k]; });
+    Object.assign(next, exp, { updatedAt: Date.now() });
+    var changed = ["amount", "date", "category", "paidBy", "tipo", "beneficiario", "concepto", "descuentoAnticipo", "deBolsillo"].some(function(k){
+      return String(old[k] == null ? "" : old[k]) !== String(next[k] == null ? "" : next[k]);
+    });
+    var resetConf = changed && (old.confirmedBy || []).length > 0;
+    if (resetConf) next.confirmedBy = [];
+    if (photoDataUrl) next.hasReceipt = true;
+    var list = state.expenses.slice();
+    list[idx] = next;
+    var ok = await saveKey("expenses", list);
+    if (!ok) { flash("No se pudieron guardar los cambios.", true); return; }
+    if (photoDataUrl) await saveKey("receipt:" + id, photoDataUrl);
+    state.expenses = list;
+    state.gastoEditId = null;
+    logActivity("Registro editado: " + currency(next.amount) + " (" + next.category + ")" + (resetConf ? " — requiere confirmar de nuevo" : ""));
+    flash(resetConf ? "Cambios guardados. Como cambió monto, fecha o quién paga, hay que confirmarlo de nuevo con clave." : "Cambios guardados.");
+    renderTabContent();
+  }
+
   function applyGastoTipo() {
     var form = document.getElementById("expense-form");
     if (!form) return;
     var isEq = form.elements["tipo"].value === "pago_equipo";
-    var conFactura = !isEq && form.elements["conFactura"].checked;
+    var conIva = !isEq && form.elements["conIva"].checked;
     form.querySelectorAll("[data-only-gasto]").forEach(function(el){ el.style.display = isEq ? "none" : ""; });
     form.querySelectorAll("[data-only-equipo]").forEach(function(el){ el.style.display = isEq ? "" : "none"; });
-    form.querySelectorAll("[data-only-factura]").forEach(function(el){ el.style.display = conFactura ? "" : "none"; });
+    form.querySelectorAll("[data-only-iva]").forEach(function(el){ el.style.display = conIva ? "" : "none"; });
     var btn = form.querySelector('button[type="submit"]');
-    if (btn) btn.textContent = isEq ? "+ Registrar pago al equipo" : "+ Registrar gasto";
+    if (btn) btn.textContent = state.gastoEditId ? "Guardar cambios" : (isEq ? "+ Registrar pago al equipo" : "+ Registrar gasto");
     var hint = document.getElementById("anticipo-hint");
     if (hint) {
       var pend = isEq ? cuentaSocio(form.elements["beneficiario"].value).anticipoPendiente : 0;
@@ -1130,7 +1206,7 @@
     var budgetsDetails = document.getElementById("budgets-details");
     if (budgetsDetails) budgetsDetails.addEventListener("toggle", function(){ state.presupuestosAbierto = budgetsDetails.open; });
     expenseForm.elements["tipo"].addEventListener("change", applyGastoTipo);
-    expenseForm.elements["conFactura"].addEventListener("change", applyGastoTipo);
+    expenseForm.elements["conIva"].addEventListener("change", applyGastoTipo);
     expenseForm.elements["beneficiario"].addEventListener("change", applyGastoTipo);
     applyGastoTipo();
     expenseForm.addEventListener("submit", async function(e){
@@ -1162,7 +1238,9 @@
         exp.concepto = fd.get("concepto");
         var descuento = Number(fd.get("descuentoAnticipo")) || 0;
         if (descuento > 0) {
-          var pendiente = cuentaSocio(exp.beneficiario).anticipoPendiente;
+          var oldE = state.gastoEditId ? state.expenses.find(function(x){ return x.id === state.gastoEditId; }) : null;
+          var propio = (oldE && isFullyConfirmed(oldE) && oldE.tipo === "pago_equipo" && oldE.beneficiario === exp.beneficiario) ? Number(oldE.descuentoAnticipo || 0) : 0;
+          var pendiente = cuentaSocio(exp.beneficiario).anticipoPendiente + propio;
           if (descuento > pendiente + 0.001) {
             flash("El descuento (" + currency(descuento) + ") es mayor al anticipo pendiente (" + currency(pendiente) + ").", true);
             return;
@@ -1170,16 +1248,17 @@
           exp.descuentoAnticipo = r2(descuento);
         }
       } else {
-        if (fd.get("conFactura")) {
-          var tasa = Number(fd.get("ivaTasa")) || 0;
-          exp.conFactura = true;
+        if (fd.get("conIva")) {
+          var tasa = Number(fd.get("ivaTasa")) || 16;
           exp.ivaRate = tasa;
           exp.iva = ivaFromAmount(amount, tasa);
         }
+        if (fd.get("conFactura")) exp.conFactura = true;
         if (fd.get("deBolsillo")) exp.deBolsillo = true;
         var cli = (fd.get("cliente") || "").trim();
         if (cli) exp.cliente = cli;
       }
+      if (state.gastoEditId) { await updateExpense(state.gastoEditId, exp, photoDataUrl); return; }
       addExpense(exp, photoDataUrl);
     });
     document.getElementById("month-filter").addEventListener("change", function(e){
@@ -1209,29 +1288,16 @@
       btn.addEventListener("click", function(){
         var src = state.expenses.find(function(x){ return x.id === btn.dataset.repeatExpense; });
         if (!src) return;
-        var f = document.getElementById("expense-form");
-        var esEq = src.tipo === "pago_equipo";
-        f.elements["tipo"].value = esEq ? "pago_equipo" : "gasto";
-        f.elements["amount"].value = src.amount;
-        if (!esEq) f.elements["category"].value = src.category;
-        f.elements["paidBy"].value = src.paidBy;
-        if (src.metodo) f.elements["metodo"].value = src.metodo;
-        f.elements["conFactura"].checked = !esEq && !!src.conFactura;
-        if (!esEq && src.conFactura) f.elements["ivaTasa"].value = String(src.ivaRate != null ? src.ivaRate : 16);
-        f.elements["deBolsillo"].checked = !esEq && !!src.deBolsillo;
-        f.elements["cliente"].value = (!esEq && src.cliente) || "";
-        f.elements["descuentoAnticipo"].value = "";
-        if (esEq) {
-          f.elements["beneficiario"].value = src.beneficiario;
-          f.elements["concepto"].value = src.concepto || CONCEPTOS_EQUIPO[0];
-        }
-        f.elements["description"].value = src.description || "";
-        f.elements["date"].value = todayISO();
-        applyGastoTipo();
+        fillExpenseForm(src, false);
         try { window.scrollTo(0, 0); } catch (err) {}
         flash("Datos copiados al formulario — revisa monto y fecha, y regístralo.");
       });
     });
+    document.querySelectorAll("[data-edit-expense]").forEach(function(btn){
+      btn.addEventListener("click", function(){ startEditExpense(btn.dataset.editExpense); });
+    });
+    var cancelEditBtn = document.getElementById("gasto-canceledit");
+    if (cancelEditBtn) cancelEditBtn.addEventListener("click", function(){ state.gastoEditId = null; renderTabContent(); });
     document.querySelectorAll("[data-delete-expense]").forEach(function(btn){
       btn.addEventListener("click", function(){ deleteExpense(btn.dataset.deleteExpense); });
     });
@@ -1279,7 +1345,7 @@
       rows.forEach(function(e){
         var eq = e.tipo === "pago_equipo";
         out.push([formatDateMX(e.date), eq ? "Pago al equipo" : "Gasto", e.category, eq ? memberName(e.beneficiario) : "", eq ? (e.concepto || "") : "",
-          e.description || "", memberName(e.paidBy), e.metodo || "", (eq || esPagoSat(e)) ? "" : (e.conFactura ? "Sí" : "No"), e.conFactura ? (e.iva || 0) : "",
+          e.description || "", memberName(e.paidBy), e.metodo || "", (eq || esPagoSat(e)) ? "" : (e.conFactura ? "Sí" : "No"), Number(e.iva) > 0 ? e.iva : "",
           e.cliente || "", e.deBolsillo ? "Sí" : "", e.descuentoAnticipo || "",
           e.amount, isFullyConfirmed(e) ? "Confirmada" : "Pendiente"]);
       });
@@ -3042,7 +3108,7 @@
     c.salidas.forEach(function(e){
       var eq = e.tipo === "pago_equipo";
       out.push([formatDateMX(e.date), eq ? "Pago al equipo" : "Gasto", eq ? ((e.concepto || "Pago") + (e.description ? " — " + e.description : "")) : ((e.category || "") + (e.description ? " — " + e.description : "")),
-        eq ? memberName(e.beneficiario) : (e.cliente || ""), e.metodo || "", (eq || esPagoSat(e)) ? "" : (e.conFactura ? "Sí" : "No"), e.conFactura ? (e.iva || 0) : "", "", e.amount]);
+        eq ? memberName(e.beneficiario) : (e.cliente || ""), e.metodo || "", (eq || esPagoSat(e)) ? "" : (e.conFactura ? "Sí" : "No"), Number(e.iva) > 0 ? e.iva : "", "", e.amount]);
     });
     downloadCSV("corte-" + mes + ".csv", out);
   }
@@ -3137,7 +3203,7 @@
         c.salidas.map(function(e){
           var eq = e.tipo === "pago_equipo";
           var concepto = eq ? (memberName(e.beneficiario) + " — " + (e.concepto || "Pago")) : ((e.category || "") + (e.description ? " — " + e.description : ""));
-          return [formatDateMX(e.date), concepto, e.metodo || "—", (eq || esPagoSat(e)) ? "—" : (e.conFactura ? "Sí " + (e.iva ? currency(e.iva) : "") : "No"), currency(e.amount)];
+          return [formatDateMX(e.date), concepto, e.metodo || "—", (eq || esPagoSat(e)) ? "—" : ((e.conFactura ? "Sí" : "No") + (Number(e.iva) > 0 ? " · " + currency(e.iva) : "")), currency(e.amount)];
         }));
     }
     doc.save("corte-" + mes + ".pdf");
