@@ -155,7 +155,7 @@
   var CAT_IVA_SAT = "IVA pagado al SAT";
   var CAT_ISR_SAT = "ISR pagado al SAT";
   var METODOS_PAGO = ["Transferencia", "Efectivo", "Tarjeta", "Otro"];
-  var CATEGORIES = ["Insumos", "Servicios y suscripciones", "Renta", "Nómina", "Marketing", "Transporte", "Equipo y herramientas", "Impuestos", CAT_IVA_SAT, CAT_ISR_SAT, CAT_EQUIPO, "Honorarios y freelancers", "Comisiones bancarias", "Seguros", "Capacitación", "Préstamos y deudas", "Otro"];
+  var CATEGORIES = ["Insumos", "Servicios y suscripciones", "Renta", "Nómina", "Marketing", "Transporte", "Equipo y herramientas", "Impuestos", CAT_IVA_SAT, CAT_ISR_SAT, CAT_EQUIPO, "Contadora / contabilidad", "Honorarios y freelancers", "Comisiones bancarias", "Seguros", "Capacitación", "Préstamos y deudas", "Otro"];
   var CONCEPTOS_EQUIPO = ["Sueldo", "Comisión", "Bono", "Retiro de utilidades", "Anticipo", "Reembolso de gastos"];
   var PRIORITIES = [{id:"alta",label:"Alta"},{id:"media",label:"Media"},{id:"baja",label:"Baja"}];
   var PRIORITY_ORDER = { alta: 0, media: 1, baja: 2 };
@@ -187,6 +187,8 @@
     gastosFacturaFilter: "todas",
     recurrentes: [],
     cierres: [],
+    repartos: {},
+    repartoMes: new Date().toISOString().slice(0,7),
     balanceMonthFilter: "",
     historialMonthFilter: "",
     tareasShowCancelled: false
@@ -426,8 +428,10 @@
       loadKey("tickets", []),
       loadKey("notas", []),
       loadKey("recurrentes", []),
-      loadKey("cierres", [])
+      loadKey("cierres", []),
+      loadKey("repartos", {})
     ]);
+    state.repartos = results[10] || {};
     var expenses = results[0], tasks = results[1], settings = results[2], contributions = results[3], budgets = results[4], auditLog = results[5], tickets = results[6], notas = results[7];
     state.recurrentes = results[8] || [];
     state.cierres = results[9] || [];
@@ -565,6 +569,7 @@
             tabButton("gastos", "Gastos") +
             tabButton("aportaciones", "Aportaciones") +
             tabButton("balance", "Balance") +
+            tabButton("reparto", "Reparto") +
             tabButton("tareas", "Tareas") +
             tabButton("soporte", "Soporte IT") +
             tabButton("notas", "Notas") +
@@ -626,6 +631,7 @@
     if (state.tab === "gastos") return gastosHTML();
     if (state.tab === "aportaciones") return aportacionesHTML();
     if (state.tab === "balance") return balanceHTML();
+    if (state.tab === "reparto") return repartoHTML();
     if (state.tab === "tareas") return tareasHTML();
     if (state.tab === "soporte") return ticketsHTML();
     if (state.tab === "notas") return notasHTML();
@@ -638,6 +644,7 @@
     if (state.tab === "gastos") bindGastosEvents();
     if (state.tab === "aportaciones") bindAportacionesEvents();
     if (state.tab === "balance") bindBalanceEvents();
+    if (state.tab === "reparto") bindRepartoEvents();
     if (state.tab === "tareas") bindTareasEvents();
     if (state.tab === "soporte") bindTicketsEvents();
     if (state.tab === "notas") bindNotasEvents();
@@ -2659,6 +2666,232 @@
         var n = state.notas.find(function(x){ return x.id === btn.dataset.notaMarcarpagada; });
         if (n) addAbono(n.id, notaSaldo(n), todayISO(), "");
       });
+    });
+  }
+
+  // ---------- Reparto del mes ----------
+  var REPARTO_DEFAULT = [
+    { nombre: "Reinversión en la empresa", pct: 40 },
+    { nombre: "Tu sueldo como trabajador", pct: 30 },
+    { nombre: "Fondo de emergencia", pct: 20 },
+    { nombre: "Ganancia adicional del propietario", pct: 10 }
+  ];
+  function repartoPcts() {
+    var p = state.settings && state.settings.repartoPct;
+    return (p && p.length) ? p : REPARTO_DEFAULT;
+  }
+  function getRepartoPlan(mes) {
+    if (!state.repartos[mes]) {
+      state.repartos[mes] = {
+        ingresoManual: "", satIva: "", satIsrPct: 0, variables: [],
+        fijos: state.recurrentes.filter(function(t){ return t.activo !== false && t.tipo !== "pago_equipo"; })
+          .map(function(t){ return { id: uid(), nombre: t.nombre, monto: Number(t.amount) || 0, on: true, fuente: "rec:" + t.id }; })
+      };
+    }
+    return state.repartos[mes];
+  }
+  function repartoCalc(mes, plan, pcts) {
+    var cobrado = corteMes(mes).cobrado;
+    var iva = ivaStats(mes);
+    var netoAuto = r2(cobrado - iva.cobrado);
+    var manual = plan.ingresoManual !== "" && plan.ingresoManual != null;
+    var neto = manual ? r2(plan.ingresoManual) : netoAuto;
+    var satIvaAuto = Math.max(0, iva.neto);
+    var satIva = (plan.satIva !== "" && plan.satIva != null) ? r2(plan.satIva) : satIvaAuto;
+    var satIsr = r2(neto * (Number(plan.satIsrPct) || 0) / 100);
+    var sumOn = function(list){ return r2(list.filter(function(l){ return l.on; }).reduce(function(s, l){ return s + Number(l.monto || 0); }, 0)); };
+    var fijos = sumOn(plan.fijos), variables = sumOn(plan.variables);
+    var sat = r2(satIva + satIsr);
+    var disponible = r2(neto - sat - fijos - variables);
+    var base = Math.max(0, disponible);
+    var pctSum = r2(pcts.reduce(function(s, p){ return s + (Number(p.pct) || 0); }, 0));
+    var buckets = pcts.map(function(p){ return { nombre: p.nombre, pct: Number(p.pct) || 0, monto: r2(base * (Number(p.pct) || 0) / 100) }; });
+    return { cobrado: cobrado, ivaCobrado: iva.cobrado, netoAuto: netoAuto, neto: neto, manual: manual, satIvaAuto: satIvaAuto, satIva: satIva, satIsr: satIsr,
+      sat: sat, fijos: fijos, variables: variables, disponible: disponible, base: base, buckets: buckets, pctSum: pctSum };
+  }
+
+  function repartoLinesHTML(kind, lines) {
+    var rows = lines.length === 0 ? '<tr><td colspan="4" class="hint" style="margin:0;">Sin conceptos todavía.</td></tr>' :
+      lines.map(function(l, i){
+        return '<tr data-rline="' + kind + '" data-idx="' + i + '">' +
+          '<td><input type="checkbox" data-f="on" class="rp-in" style="width:auto;" ' + (l.on ? "checked" : "") + ' aria-label="Incluir" /></td>' +
+          '<td><input type="text" data-f="nombre" class="rp-in" value="' + escapeHtml(l.nombre) + '" placeholder="Concepto" /></td>' +
+          '<td><input type="number" min="0" step="0.01" data-f="monto" class="rp-in" value="' + escapeHtml(String(l.monto)) + '" /></td>' +
+          '<td><button type="button" class="icon-btn" data-rline-del="' + kind + ':' + i + '" aria-label="Quitar">✕</button></td></tr>';
+      }).join("");
+    return '<table><thead><tr><th style="width:30px;"></th><th>Concepto</th><th style="width:150px;">Monto</th><th style="width:34px;"></th></tr></thead><tbody>' + rows + '</tbody></table>';
+  }
+
+  function repartoHTML() {
+    var mes = state.repartoMes;
+    var plan = getRepartoPlan(mes);
+    var pcts = repartoPcts();
+    var r = repartoCalc(mes, plan, pcts);
+    var cierre = cierreDe(mes);
+    var pagosEquipoMes = sumAmounts(state.expenses.filter(isFullyConfirmed).filter(function(e){ return e.tipo === "pago_equipo" && inMonth(e.date, mes); }));
+    var money = function(id, v, extra){ return '<span class="mono" id="' + id + '" style="' + (extra || "") + '">' + currency(v) + '</span>'; };
+    var line = function(label, valueHTML, bold){
+      return '<div style="display:flex; justify-content:space-between; align-items:center; gap:12px; padding:5px 0; font-size:13px;' + (bold ? " font-weight:700; border-top:1px solid var(--paper-line); margin-top:4px; padding-top:8px;" : "") + '"><span>' + label + '</span>' + valueHTML + '</div>';
+    };
+    var bucketRows = r.buckets.map(function(b, i){
+      return '<tr><td data-label="Destino"><input type="text" class="rp-in rp-pctname" data-rp-name="' + i + '" value="' + escapeHtml(b.nombre) + '" /></td>' +
+        '<td data-label="%"><input type="number" min="0" max="100" step="0.5" class="rp-in rp-pctval" data-rp-pct="' + i + '" value="' + b.pct + '" style="width:80px;" /></td>' +
+        '<td class="mono amount" data-label="Monto" id="rp-b-' + i + '" style="font-size:15px;">' + currency(b.monto) + '</td></tr>';
+    }).join("");
+
+    return (
+      '<h2 class="panel-title">Reparto del mes</h2>' +
+      '<p class="hint">Cuando te pagan: apartas el SAT, los gastos fijos y los variables, y lo que sobra se reparte según tus porcentajes. Todo se guarda por mes y lo puedes ajustar cuando quieras.</p>' +
+      '<div class="list-header"><input type="month" id="rp-mes" value="' + escapeHtml(mes) + '" />' +
+        (cierre ? '<span class="stamp stamp-hecho">Mes cerrado</span>' : '') + '</div>' +
+
+      '<div class="card"><h3 class="card-title">1. Ingreso del mes (lo ya cobrado)</h3>' +
+        line("Cobrado en " + mesLabel(mes) + " (abonos recibidos)", money("rp-cobrado", r.cobrado)) +
+        line("IVA incluido en lo cobrado", '<span class="mono" id="rp-ivac">− ' + currency(r.ivaCobrado) + '</span>') +
+        line("Ingreso neto sin IVA", money("rp-neto", r.neto), true) +
+        '<label style="display:block; font-size:12px; color:var(--ink-soft); margin-top:10px;">Usar otro monto sin IVA (opcional — déjalo vacío para usar el cobrado)' +
+          '<input type="number" min="0" step="0.01" id="rp-ingreso-manual" class="rp-in" value="' + escapeHtml(String(plan.ingresoManual)) + '" placeholder="' + r.netoAuto.toFixed(2) + '" style="max-width:220px; display:block; margin-top:4px;" /></label>' +
+        (r.cobrado === 0 && !r.manual ? '<p class="hint" style="margin:8px 0 0;">No hay abonos registrados en este mes. Registra el pago en Notas o escribe el monto arriba.</p>' : '') +
+      '</div>' +
+
+      '<div class="card"><h3 class="card-title">2. SAT (lo que se aparta)</h3>' +
+        '<div class="form-grid">' +
+          '<label>IVA por pagar del mes<input type="number" min="0" step="0.01" id="rp-sat-iva" class="rp-in" value="' + escapeHtml(String(plan.satIva)) + '" placeholder="' + r.satIvaAuto.toFixed(2) + '" /><span class="hint" style="margin:0;">Automático: IVA cobrado menos IVA de tus gastos con factura. Escribe otro monto si tu contador te da uno distinto.</span></label>' +
+          '<label>ISR / otros impuestos (% del ingreso neto)<input type="number" min="0" max="100" step="0.1" id="rp-isr-pct" class="rp-in" value="' + escapeHtml(String(plan.satIsrPct)) + '" /><span class="hint" style="margin:0;">Pon el porcentaje que te indique tu contador según tu régimen.</span></label>' +
+        '</div>' +
+        line("Total a apartar para el SAT", money("rp-sat-total", r.sat), true) +
+      '</div>' +
+
+      '<div class="card"><h3 class="card-title">3. Gastos fijos</h3>' +
+        '<p class="hint" style="margin:-6px 0 8px;">Palomea los que sí vas a pagar con este ingreso. Vienen de tus gastos recurrentes; puedes agregar más.</p>' +
+        repartoLinesHTML("fijos", plan.fijos) +
+        '<div style="display:flex; gap:10px; flex-wrap:wrap;"><button type="button" class="btn-secondary" id="rp-add-fijos">+ Agregar gasto fijo</button>' +
+          '<button type="button" class="btn-secondary" id="rp-import-rec">Traer mis recurrentes</button></div>' +
+        line("Total gastos fijos", money("rp-fijos-total", r.fijos), true) +
+      '</div>' +
+
+      '<div class="card"><h3 class="card-title">4. Gastos variables</h3>' +
+        '<p class="hint" style="margin:-6px 0 8px;">Lo que cambia cada mes (publicidad, viáticos, compras). Puedes traer los que ya registraste en Gastos o escribirlos a mano.</p>' +
+        repartoLinesHTML("variables", plan.variables) +
+        '<div style="display:flex; gap:10px; flex-wrap:wrap;"><button type="button" class="btn-secondary" id="rp-add-variables">+ Agregar gasto variable</button>' +
+          '<button type="button" class="btn-secondary" id="rp-import-var">Traer gastos del mes</button></div>' +
+        line("Total gastos variables", money("rp-var-total", r.variables), true) +
+      '</div>' +
+
+      '<div class="card"><h3 class="card-title">5. Lo que sobra y cómo se reparte</h3>' +
+        line("Ingreso neto sin IVA", '<span class="mono" id="rp-s-neto">' + currency(r.neto) + '</span>') +
+        line("− SAT", '<span class="mono" id="rp-s-sat">' + currency(r.sat) + '</span>') +
+        line("− Gastos fijos", '<span class="mono" id="rp-s-fijos">' + currency(r.fijos) + '</span>') +
+        line("− Gastos variables", '<span class="mono" id="rp-s-var">' + currency(r.variables) + '</span>') +
+        line("Disponible para repartir", '<span class="mono" id="rp-disp" style="font-size:18px; color:' + (r.disponible < 0 ? "var(--stamp-red)" : "var(--stamp-green)") + ';">' + currency(r.disponible) + '</span>', true) +
+        '<p class="hint" id="rp-neg" style="margin:6px 0 10px; color:var(--stamp-red);' + (r.disponible < 0 ? "" : " display:none;") + '">⚠ Los apartados superan el ingreso: no queda nada que repartir este mes. Revisa gastos o el monto de ingreso.</p>' +
+        '<table style="margin-top:8px;"><thead><tr><th>Destino</th><th style="width:100px;">%</th><th style="width:170px;">Te toca</th></tr></thead><tbody>' + bucketRows + '</tbody></table>' +
+        '<div style="display:flex; justify-content:space-between; gap:12px; flex-wrap:wrap; margin-top:8px;">' +
+          '<span class="hint" id="rp-pctsum" style="margin:0; color:' + (r.pctSum === 100 ? "var(--stamp-green)" : "var(--stamp-red)") + ';">Los porcentajes suman ' + r.pctSum + '%' + (r.pctSum === 100 ? " ✓" : " — deben sumar 100%") + '</span>' +
+          '<span class="hint" style="margin:0;">Pagos al equipo ya registrados en Gastos este mes: <strong class="mono">' + currency(pagosEquipoMes) + '</strong></span>' +
+        '</div>' +
+      '</div>'
+    );
+  }
+
+  function syncRepartoFromDOM() {
+    var plan = getRepartoPlan(state.repartoMes);
+    ["fijos", "variables"].forEach(function(kind){
+      var rows = document.querySelectorAll('[data-rline="' + kind + '"]');
+      if (rows.length === 0 && plan[kind].length > 0 && !document.getElementById("rp-mes")) return;
+      plan[kind] = [].map.call(rows, function(tr, i){
+        var old = plan[kind][i] || {};
+        return { id: old.id || uid(), fuente: old.fuente || "manual", on: tr.querySelector('[data-f="on"]').checked,
+          nombre: tr.querySelector('[data-f="nombre"]').value, monto: Number(tr.querySelector('[data-f="monto"]').value) || 0 };
+      });
+    });
+    plan.ingresoManual = document.getElementById("rp-ingreso-manual").value;
+    plan.satIva = document.getElementById("rp-sat-iva").value;
+    plan.satIsrPct = Number(document.getElementById("rp-isr-pct").value) || 0;
+    return readRepartoPcts();
+  }
+
+  function readRepartoPcts() {
+    var pcts = [];
+    document.querySelectorAll("[data-rp-pct]").forEach(function(inp){
+      var i = Number(inp.dataset.rpPct);
+      pcts[i] = { nombre: document.querySelector('[data-rp-name="' + i + '"]').value, pct: Number(inp.value) || 0 };
+    });
+    return pcts;
+  }
+
+  function refreshRepartoResult() {
+    var pcts = syncRepartoFromDOM();
+    var plan = getRepartoPlan(state.repartoMes);
+    var r = repartoCalc(state.repartoMes, plan, pcts);
+    var set = function(id, txt){ var el = document.getElementById(id); if (el) el.textContent = txt; };
+    set("rp-neto", currency(r.neto)); set("rp-sat-total", currency(r.sat));
+    set("rp-fijos-total", currency(r.fijos)); set("rp-var-total", currency(r.variables));
+    set("rp-s-neto", currency(r.neto)); set("rp-s-sat", currency(r.sat)); set("rp-s-fijos", currency(r.fijos)); set("rp-s-var", currency(r.variables));
+    set("rp-disp", currency(r.disponible));
+    var disp = document.getElementById("rp-disp"); if (disp) disp.style.color = r.disponible < 0 ? "var(--stamp-red)" : "var(--stamp-green)";
+    var neg = document.getElementById("rp-neg"); if (neg) neg.style.display = r.disponible < 0 ? "" : "none";
+    r.buckets.forEach(function(b, i){ set("rp-b-" + i, currency(b.monto)); });
+    var ps = document.getElementById("rp-pctsum");
+    if (ps) { ps.textContent = "Los porcentajes suman " + r.pctSum + "%" + (r.pctSum === 100 ? " ✓" : " — deben sumar 100%"); ps.style.color = r.pctSum === 100 ? "var(--stamp-green)" : "var(--stamp-red)"; }
+  }
+
+  async function persistReparto(skipLinesSync) {
+    var pcts = skipLinesSync ? readRepartoPcts() : syncRepartoFromDOM();
+    var ok = await saveKey("repartos", state.repartos);
+    var before = JSON.stringify(repartoPcts());
+    if (JSON.stringify(pcts) !== before && pcts.length) await saveSettings(Object.assign({}, state.settings, { repartoPct: pcts }));
+    if (!ok) flash("No se pudo guardar el reparto.", true);
+  }
+
+  function bindRepartoEvents() {
+    document.getElementById("rp-mes").addEventListener("change", function(e){
+      if (!e.target.value) return;
+      state.repartoMes = e.target.value;
+      renderTabContent();
+    });
+    document.querySelectorAll(".rp-in").forEach(function(el){
+      el.addEventListener("input", refreshRepartoResult);
+      el.addEventListener("change", persistReparto);
+    });
+    ["fijos", "variables"].forEach(function(kind){
+      document.getElementById("rp-add-" + kind).addEventListener("click", async function(){
+        syncRepartoFromDOM();
+        getRepartoPlan(state.repartoMes)[kind].push({ id: uid(), nombre: "", monto: 0, on: true, fuente: "manual" });
+        await persistReparto(true); renderTabContent();
+      });
+    });
+    document.querySelectorAll("[data-rline-del]").forEach(function(btn){
+      btn.addEventListener("click", async function(){
+        syncRepartoFromDOM();
+        var parts = btn.dataset.rlineDel.split(":");
+        getRepartoPlan(state.repartoMes)[parts[0]].splice(Number(parts[1]), 1);
+        await persistReparto(true); renderTabContent();
+      });
+    });
+    document.getElementById("rp-import-rec").addEventListener("click", async function(){
+      syncRepartoFromDOM();
+      var plan = getRepartoPlan(state.repartoMes);
+      var have = plan.fijos.map(function(l){ return l.fuente; });
+      var added = 0;
+      state.recurrentes.filter(function(t){ return t.activo !== false && t.tipo !== "pago_equipo" && have.indexOf("rec:" + t.id) === -1; }).forEach(function(t){
+        plan.fijos.push({ id: uid(), nombre: t.nombre, monto: Number(t.amount) || 0, on: true, fuente: "rec:" + t.id }); added++;
+      });
+      flash(added ? added + " recurrente(s) agregado(s)." : "No hay recurrentes nuevos que traer.");
+      await persistReparto(true); renderTabContent();
+    });
+    document.getElementById("rp-import-var").addEventListener("click", async function(){
+      syncRepartoFromDOM();
+      var plan = getRepartoPlan(state.repartoMes);
+      var have = plan.variables.map(function(l){ return l.fuente; });
+      var added = 0;
+      state.expenses.filter(isFullyConfirmed).filter(function(e){
+        return inMonth(e.date, state.repartoMes) && e.tipo !== "pago_equipo" && !esPagoSat(e) && !e.recurrenteId && have.indexOf("gasto:" + e.id) === -1;
+      }).forEach(function(e){
+        plan.variables.push({ id: uid(), nombre: e.description || e.category, monto: Number(e.amount) || 0, on: true, fuente: "gasto:" + e.id }); added++;
+      });
+      flash(added ? added + " gasto(s) del mes agregado(s)." : "No hay gastos nuevos de este mes que traer.");
+      await persistReparto(true); renderTabContent();
     });
   }
 
