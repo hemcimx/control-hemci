@@ -151,7 +151,12 @@
 <body>
 <div id="app"></div>
 <script>
-  var CATEGORIES = ["Insumos", "Servicios y suscripciones", "Renta", "Nómina", "Marketing", "Transporte", "Equipo y herramientas", "Impuestos", "Otro"];
+  var CAT_EQUIPO = "Pagos al equipo";
+  var CAT_IVA_SAT = "IVA pagado al SAT";
+  var CAT_ISR_SAT = "ISR pagado al SAT";
+  var METODOS_PAGO = ["Transferencia", "Efectivo", "Tarjeta", "Otro"];
+  var CATEGORIES = ["Insumos", "Servicios y suscripciones", "Renta", "Nómina", "Marketing", "Transporte", "Equipo y herramientas", "Impuestos", CAT_IVA_SAT, CAT_ISR_SAT, CAT_EQUIPO, "Honorarios y freelancers", "Comisiones bancarias", "Seguros", "Capacitación", "Préstamos y deudas", "Otro"];
+  var CONCEPTOS_EQUIPO = ["Sueldo", "Comisión", "Bono", "Retiro de utilidades", "Anticipo", "Reembolso de gastos"];
   var PRIORITIES = [{id:"alta",label:"Alta"},{id:"media",label:"Media"},{id:"baja",label:"Baja"}];
   var PRIORITY_ORDER = { alta: 0, media: 1, baja: 2 };
   var STATUS_META = {
@@ -178,6 +183,10 @@
     loading: true,
     notice: null,
     gastosMonthFilter: new Date().toISOString().slice(0,7),
+    gastosTipoFilter: "todos",
+    gastosFacturaFilter: "todas",
+    recurrentes: [],
+    cierres: [],
     balanceMonthFilter: "",
     historialMonthFilter: "",
     tareasShowCancelled: false
@@ -415,9 +424,13 @@
       loadKey("budgets", {}),
       loadKey("auditlog", []),
       loadKey("tickets", []),
-      loadKey("notas", [])
+      loadKey("notas", []),
+      loadKey("recurrentes", []),
+      loadKey("cierres", [])
     ]);
     var expenses = results[0], tasks = results[1], settings = results[2], contributions = results[3], budgets = results[4], auditLog = results[5], tickets = results[6], notas = results[7];
+    state.recurrentes = results[8] || [];
+    state.cierres = results[9] || [];
     var team = teamResult.value;
     if (teamResult.failed) {
       // No se pudo confirmar si hay equipo guardado (falla de red/servidor).
@@ -452,17 +465,28 @@
   }
 
   async function addExpense(exp, photoDataUrl) {
+    if (isMesCerrado(exp.date)) {
+      flash("El mes " + mesLabel((exp.date || "").slice(0, 7)) + " está cerrado. Reábrelo en Balance para registrar movimientos de ese mes.", true);
+      return;
+    }
     var id = uid();
     var item = Object.assign({}, exp, { id: id, createdAt: Date.now(), confirmedBy: [], hasReceipt: !!photoDataUrl });
     state.expenses = [item].concat(state.expenses);
     var ok = await saveKey("expenses", state.expenses);
     if (photoDataUrl) await saveKey("receipt:" + id, photoDataUrl);
-    flash(ok ? "Gasto registrado." : "No se pudo guardar el gasto.", !ok);
-    logActivity("Gasto de " + currency(item.amount) + " en " + item.category + " registrado" + (photoDataUrl ? " (con recibo)" : ""));
+    var esEquipo = item.tipo === "pago_equipo";
+    flash(ok ? (esEquipo ? "Pago al equipo registrado." : "Gasto registrado.") : "No se pudo guardar el registro.", !ok);
+    logActivity(esEquipo
+      ? "Pago al equipo de " + currency(item.amount) + " a " + memberName(item.beneficiario) + " (" + (item.concepto || "Pago") + ") registrado" + (photoDataUrl ? " (con comprobante)" : "")
+      : "Gasto de " + currency(item.amount) + " en " + item.category + " registrado" + (photoDataUrl ? " (con recibo)" : ""));
     renderTabContent();
   }
   async function deleteExpense(id) {
     var removed = state.expenses.find(function(x){ return x.id === id; });
+    if (removed && isMesCerrado(removed.date)) {
+      flash("El mes " + mesLabel((removed.date || "").slice(0, 7)) + " está cerrado. Reábrelo en Balance para eliminar movimientos de ese mes.", true);
+      return;
+    }
     state.expenses = state.expenses.filter(function(x){ return x.id !== id; });
     await saveKey("expenses", state.expenses);
     if (removed) logActivity("Gasto eliminado: " + currency(removed.amount) + " (" + removed.category + ")");
@@ -658,6 +682,10 @@
         '<p class="hint">⚠ ' + openTickets + ' reporte(s) de soporte IT sin resolver — revisa la pestaña Soporte IT.</p>' : '') +
       (notasPorCobrar > 0 ?
         '<p class="hint">⚠ ' + notasPorCobrar + ' nota(s) de servicio pendientes de cobro — revisa la pestaña Balance.</p>' : '') +
+      (recurrentesPendientes().length > 0 ?
+        '<p class="hint">⚠ ' + recurrentesPendientes().length + ' gasto(s) recurrente(s) sin registrar este mes: ' + recurrentesPendientes().map(function(t){ return escapeHtml(t.nombre); }).join(", ") + ' — revisa la pestaña Gastos.</p>' : '') +
+      ((!(state.settings && state.settings.lastBackupAt) || (Date.now() - state.settings.lastBackupAt) > 30 * 86400000) ?
+        '<p class="hint">⚠ ' + ((state.settings && state.settings.lastBackupAt) ? 'Hace más de 30 días que no descargas un respaldo' : 'Todavía no has descargado un respaldo') + ' — hazlo en la pestaña Equipo.</p>' : '') +
       '<div class="stat-grid">' +
         '<div class="stat-card"><div class="stat-label">Gastado este mes</div><div class="stat-value">' + currency(monthTotal) + '</div></div>' +
         '<div class="stat-card"><div class="stat-label">Tareas pendientes</div><div class="stat-value">' + pendientes + '</div></div>' +
@@ -746,13 +774,264 @@
   }
 
   // ---------- Gastos ----------
+  function sumAmounts(list) {
+    return list.reduce(function(s, e){ return s + Number(e.amount || 0); }, 0);
+  }
+  function r2(x) { return Math.round((Number(x) || 0) * 100) / 100; }
+  function esPagoSat(e) { return e.category === CAT_IVA_SAT || e.category === CAT_ISR_SAT; }
+  function inMonth(dateStr, mes) { return !mes || (dateStr || "").slice(0, 7) === mes; }
+  function ivaFromAmount(amount, rate) {
+    var t = Number(rate) || 0;
+    return t > 0 ? r2(Number(amount) - Number(amount) / (1 + t / 100)) : 0;
+  }
+  var MESES_LABEL = ["Enero","Febrero","Marzo","Abril","Mayo","Junio","Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"];
+  function mesLabel(mes) {
+    if (!mes || mes.length < 7) return "Histórico";
+    return MESES_LABEL[Number(mes.slice(5, 7)) - 1] + " " + mes.slice(0, 4);
+  }
+
+  // ----- Cierres de mes -----
+  function cierreDe(mes) { return state.cierres.find(function(c){ return c.mes === mes; }) || null; }
+  function isMesCerrado(dateStr) { return !!(dateStr && cierreDe(dateStr.slice(0, 7))); }
+
+  // ----- IVA estimado (flujo de efectivo) -----
+  function ivaStats(mes) {
+    var cobrado = 0, cobradoHist = 0;
+    (state.notas || []).forEach(function(n){
+      var total = Number(n.total || 0);
+      var ratio = total > 0 ? Number(n.iva || 0) / total : 0;
+      notaAbonos(n).forEach(function(a){
+        var part = Number(a.monto || 0) * ratio;
+        cobradoHist += part;
+        if (inMonth(a.fecha, mes)) cobrado += part;
+      });
+    });
+    var conf = state.expenses.filter(isFullyConfirmed);
+    var acred = function(list){ return list.filter(function(e){ return e.conFactura && Number(e.iva) > 0; }).reduce(function(s, e){ return s + Number(e.iva); }, 0); };
+    var acreditable = acred(conf.filter(function(e){ return inMonth(e.date, mes); }));
+    var acreditableHist = acred(conf);
+    var pagadoSat = sumAmounts(conf.filter(function(e){ return e.category === CAT_IVA_SAT && inMonth(e.date, mes); }));
+    var pagadoSatHist = sumAmounts(conf.filter(function(e){ return e.category === CAT_IVA_SAT; }));
+    var isrPagado = sumAmounts(conf.filter(function(e){ return e.category === CAT_ISR_SAT && inMonth(e.date, mes); }));
+    return {
+      cobrado: r2(cobrado), acreditable: r2(acreditable), neto: r2(cobrado - acreditable),
+      pagadoSat: r2(pagadoSat), isrPagado: r2(isrPagado), pendienteHist: r2(cobradoHist - acreditableHist - pagadoSatHist)
+    };
+  }
+
+  // ----- Cuentas con los socios (reembolsos y anticipos) -----
+  function cuentaSocio(memberId) {
+    var conf = state.expenses.filter(isFullyConfirmed);
+    var equipoMio = conf.filter(function(e){ return e.tipo === "pago_equipo" && e.beneficiario === memberId; });
+    var bolsillo = sumAmounts(conf.filter(function(e){ return e.tipo !== "pago_equipo" && e.deBolsillo && e.paidBy === memberId; }));
+    var reembolsado = sumAmounts(equipoMio.filter(function(e){ return e.concepto === "Reembolso de gastos"; }));
+    var anticipos = sumAmounts(equipoMio.filter(function(e){ return e.concepto === "Anticipo"; }));
+    var descontado = equipoMio.reduce(function(s, e){ return s + Number(e.descuentoAnticipo || 0); }, 0);
+    var reembolsoPendiente = Math.max(0, r2(bolsillo - reembolsado));
+    var anticipoPendiente = Math.max(0, r2(anticipos - descontado));
+    return { bolsillo: r2(bolsillo), reembolsado: r2(reembolsado), anticipos: r2(anticipos), descontado: r2(descontado),
+      reembolsoPendiente: reembolsoPendiente, anticipoPendiente: anticipoPendiente, neto: r2(reembolsoPendiente - anticipoPendiente) };
+  }
+
+  // ----- Clientes / proyectos -----
+  function normCliente(s) { return String(s || "").trim().toLowerCase(); }
+  function clientesConocidos() {
+    var seen = {}, out = [];
+    (state.notas || []).map(function(n){ return n.cliente; }).concat(state.expenses.map(function(e){ return e.cliente; })).forEach(function(c){
+      var k = normCliente(c);
+      if (k && !seen[k]) { seen[k] = true; out.push(String(c).trim()); }
+    });
+    return out;
+  }
+
+  // ----- Gastos recurrentes -----
+  function recurrenteRegistradoEsteMes(t) {
+    var m = todayISO().slice(0, 7);
+    return state.expenses.some(function(e){ return e.recurrenteId === t.id && (e.date || "").slice(0, 7) === m; });
+  }
+  function recurrentesPendientes() {
+    var hoy = Number(todayISO().slice(8, 10));
+    return state.recurrentes.filter(function(t){ return t.activo !== false && !recurrenteRegistradoEsteMes(t) && hoy >= Number(t.dia || 1); });
+  }
+
+  function pagosEquipoCardHTML(monthFilter) {
+    var all = state.expenses.filter(function(e){ return e.tipo === "pago_equipo"; });
+    if (all.length === 0) {
+      return '<div class="card"><h3 class="card-title">Pagos al equipo</h3>' +
+        '<p class="hint" style="margin:0;">Aquí verás cuánto se le ha pagado a cada integrante (sueldos, retiros, comisiones). Elige el tipo <strong>Pago al equipo</strong> en el formulario de arriba para registrarlos.</p></div>';
+    }
+    var confirmed = all.filter(isFullyConfirmed);
+    var inPeriod = function(e){ return !monthFilter || (e.date && e.date.slice(0, 7) === monthFilter); };
+    var knownIds = state.team.map(function(m){ return m.id; });
+    var people = state.team.map(function(m){ return { id: m.id, name: m.name, list: confirmed.filter(function(e){ return e.beneficiario === m.id; }) }; });
+    var orphans = confirmed.filter(function(e){ return knownIds.indexOf(e.beneficiario) === -1; });
+    if (orphans.length) people.push({ name: "Otros / ex integrantes", list: orphans });
+
+    var rows = people.map(function(p){
+      var per = p.list.filter(inPeriod);
+      var byConcept = {};
+      per.forEach(function(e){ var k = e.concepto || "Pago"; byConcept[k] = (byConcept[k] || 0) + Number(e.amount || 0); });
+      var detail = Object.keys(byConcept).map(function(k){ return escapeHtml(k) + ' ' + currency(byConcept[k]); }).join(' · ');
+      var antic = p.id ? cuentaSocio(p.id).anticipoPendiente : 0;
+      return '<tr><td data-label="Integrante"><strong>' + escapeHtml(p.name) + '</strong></td>' +
+        '<td data-label="Detalle del periodo" class="hint" style="margin:0;">' + (detail || "—") + '</td>' +
+        '<td class="mono amount" data-label="Periodo">' + currency(sumAmounts(per)) + '</td>' +
+        '<td class="mono" data-label="Histórico">' + currency(sumAmounts(p.list)) + '</td>' +
+        '<td class="mono" data-label="Anticipo pendiente" style="' + (antic > 0 ? "color:var(--stamp-red); font-weight:700;" : "") + '">' + (antic > 0 ? currency(antic) : "—") + '</td></tr>';
+    }).join("");
+    var totalPer = sumAmounts(confirmed.filter(inPeriod));
+    var pending = all.length - confirmed.length;
+    return '<div class="card"><h3 class="card-title">Pagos al equipo' + (monthFilter ? "" : " — histórico") + '</h3>' +
+      '<table><thead><tr><th>Integrante</th><th>Detalle del periodo</th><th>Periodo</th><th>Histórico</th><th>Anticipo pendiente</th></tr></thead><tbody>' + rows + '</tbody></table>' +
+      '<div style="display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap; margin-top:10px; padding-top:10px; border-top:1px solid var(--paper-line);">' +
+        '<span class="hint" style="margin:0;">' + (pending > 0 ? pending + ' pago(s) esperando confirmación de clave — no cuentan todavía.' : 'Solo cuentan los pagos confirmados con clave.') + '</span>' +
+        '<span class="total-chip">Total pagado al equipo (periodo): ' + currency(totalPer) + '</span>' +
+      '</div></div>';
+  }
+
+  function expenseMetaHTML(e) {
+    var bits = [];
+    if (e.metodo) bits.push(escapeHtml(e.metodo));
+    if (e.tipo !== "pago_equipo") {
+      if (!esPagoSat(e)) bits.push(e.conFactura ? "Con factura" + (Number(e.iva) > 0 ? " (IVA " + currency(e.iva) + ")" : "") : "Sin factura");
+      if (e.cliente) bits.push("Cliente: " + escapeHtml(e.cliente));
+      if (e.deBolsillo) bits.push("De bolsillo de " + escapeHtml(memberName(e.paidBy)));
+    } else if (Number(e.descuentoAnticipo) > 0) {
+      bits.push("Descuento de anticipo " + currency(e.descuentoAnticipo));
+    }
+    if (e.recurrenteId) bits.push("Recurrente");
+    return bits.length ? '<br><span class="hint" style="margin:0;">' + bits.join(" · ") + '</span>' : "";
+  }
+
+  function recurrenteDetalle(t) {
+    return t.tipo === "pago_equipo"
+      ? escapeHtml((t.concepto || "Pago") + " — " + memberName(t.beneficiario))
+      : escapeHtml(t.category || "Gasto");
+  }
+
+  function recurrentesCardHTML() {
+    var hoy = Number(todayISO().slice(8, 10));
+    var rows = state.recurrentes.length === 0
+      ? '<p class="hint" style="margin:0;">Para gastos que se repiten (hosting, dominio, software, renta, sueldos de cada quincena), usa <strong>Hacer recurrente</strong> en cualquier fila de la lista de abajo. Te avisaremos cuando llegue su día y no esté registrado.</p>'
+      : '<table><thead><tr><th>Nombre</th><th>Detalle</th><th>Monto</th><th>Día</th><th>Este mes</th><th></th></tr></thead><tbody>' +
+        state.recurrentes.map(function(t){
+          var done = recurrenteRegistradoEsteMes(t);
+          var due = hoy >= Number(t.dia || 1);
+          var stamp = done ? '<span class="stamp stamp-hecho">Registrado</span>' : (due ? '<span class="stamp stamp-pendiente">Pendiente</span>' : '<span class="stamp stamp-en_proceso">Por llegar</span>');
+          return '<tr><td data-label="Nombre"><strong>' + escapeHtml(t.nombre) + '</strong></td>' +
+            '<td data-label="Detalle" class="hint" style="margin:0;">' + recurrenteDetalle(t) + '</td>' +
+            '<td class="mono amount" data-label="Monto">' + currency(t.amount) + '</td>' +
+            '<td class="mono" data-label="Día">' + t.dia + '</td>' +
+            '<td data-label="Este mes">' + stamp + '</td>' +
+            '<td data-label="">' + (done ? "" : '<button type="button" class="btn-secondary" style="margin-top:0;" data-rec-registrar="' + escapeHtml(t.id) + '">Registrar ahora</button> ') +
+              '<button class="icon-btn" data-rec-quitar="' + escapeHtml(t.id) + '" aria-label="Quitar recurrente">✕</button></td></tr>';
+        }).join("") + '</tbody></table>';
+    return '<div class="card"><h3 class="card-title">Gastos recurrentes (' + state.recurrentes.length + ')</h3>' + rows + '</div>';
+  }
+
+  async function saveRecurrentes(next) {
+    var ok = await saveKey("recurrentes", next);
+    if (!ok) { flash("No se pudo guardar el recurrente.", true); return false; }
+    state.recurrentes = next;
+    return true;
+  }
+
+  async function hacerRecurrente(expenseId) {
+    var src = state.expenses.find(function(x){ return x.id === expenseId; });
+    if (!src) return;
+    var diaDefault = Number((src.date || "").slice(8, 10)) || 1;
+    var diaTxt = prompt("¿Qué día del mes se repite este pago? (1 a 31)", String(diaDefault));
+    if (diaTxt === null) return;
+    var dia = Math.min(31, Math.max(1, parseInt(diaTxt, 10) || diaDefault));
+    var nombreDefault = src.tipo === "pago_equipo" ? ((src.concepto || "Pago") + " " + memberName(src.beneficiario)) : (src.description || src.category);
+    var nombre = prompt("Nombre del recurrente:", nombreDefault);
+    if (nombre === null) return;
+    nombre = nombre.trim() || nombreDefault;
+    var t = {
+      id: uid(), nombre: nombre, dia: dia, activo: true,
+      tipo: src.tipo === "pago_equipo" ? "pago_equipo" : "gasto",
+      amount: src.amount, category: src.category, paidBy: src.paidBy, metodo: src.metodo || "",
+      description: src.description || "", cliente: src.cliente || ""
+    };
+    if (src.tipo === "pago_equipo") { t.beneficiario = src.beneficiario; t.concepto = src.concepto; }
+    else { t.conFactura = !!src.conFactura; t.ivaRate = src.ivaRate; t.deBolsillo = !!src.deBolsillo; }
+    if (!(await saveRecurrentes(state.recurrentes.concat([t])))) return;
+    if ((src.date || "").slice(0, 7) === todayISO().slice(0, 7) && !src.recurrenteId) {
+      state.expenses = state.expenses.map(function(x){ return x.id === src.id ? Object.assign({}, x, { recurrenteId: t.id }) : x; });
+      await saveKey("expenses", state.expenses);
+    }
+    logActivity('Recurrente creado: "' + t.nombre + '" (día ' + t.dia + ", " + currency(t.amount) + ")");
+    flash('Recurrente "' + t.nombre + '" creado — te avisaremos cada mes.');
+    renderTabContent();
+  }
+
+  async function registrarRecurrente(id) {
+    var t = state.recurrentes.find(function(x){ return x.id === id; });
+    if (!t) return;
+    var exp = { amount: t.amount, category: t.category, paidBy: t.paidBy, metodo: t.metodo || "", date: todayISO(),
+      description: t.description || t.nombre, recurrenteId: t.id };
+    if (t.cliente) exp.cliente = t.cliente;
+    if (t.tipo === "pago_equipo") { exp.tipo = "pago_equipo"; exp.beneficiario = t.beneficiario; exp.concepto = t.concepto; }
+    else {
+      if (t.conFactura) { exp.conFactura = true; exp.ivaRate = t.ivaRate; exp.iva = ivaFromAmount(t.amount, t.ivaRate); }
+      if (t.deBolsillo) exp.deBolsillo = true;
+    }
+    await addExpense(exp, null);
+  }
+
+  async function quitarRecurrente(id) {
+    var t = state.recurrentes.find(function(x){ return x.id === id; });
+    if (!t) return;
+    if (!(await saveRecurrentes(state.recurrentes.filter(function(x){ return x.id !== id; })))) return;
+    logActivity('Recurrente eliminado: "' + t.nombre + '"');
+    renderTabContent();
+  }
+
+  function expenseDescHTML(e) {
+    var base = escapeHtml(e.description || "");
+    if (e.tipo === "pago_equipo") {
+      return '<strong>' + escapeHtml(memberName(e.beneficiario)) + '</strong> — ' + escapeHtml(e.concepto || "Pago") +
+        (base ? '<br><span class="hint" style="margin:0;">' + base + '</span>' : '') + expenseMetaHTML(e);
+    }
+    return (base || "—") + expenseMetaHTML(e);
+  }
+
   function gastosHTML() {
     var monthFilter = state.gastosMonthFilter;
-    var filtered = state.expenses.filter(function(e){ return !monthFilter || (e.date && e.date.slice(0,7) === monthFilter); });
-    var total = filtered.filter(isFullyConfirmed).reduce(function(s,e){ return s + Number(e.amount || 0); }, 0);
-    var pendingCount = filtered.length - filtered.filter(isFullyConfirmed).length;
+    var tipoFilter = state.gastosTipoFilter || "todos";
+    var facturaFilter = state.gastosFacturaFilter || "todas";
+    var filtered = state.expenses.filter(function(e){
+      if (monthFilter && !(e.date && e.date.slice(0,7) === monthFilter)) return false;
+      if (tipoFilter === "pago_equipo" && e.tipo !== "pago_equipo") return false;
+      if (tipoFilter === "gasto" && e.tipo === "pago_equipo") return false;
+      if (facturaFilter === "con" && !(e.tipo !== "pago_equipo" && e.conFactura)) return false;
+      if (facturaFilter === "sin" && !(e.tipo !== "pago_equipo" && !esPagoSat(e) && !e.conFactura)) return false;
+      return true;
+    });
+    var confirmedFiltered = filtered.filter(isFullyConfirmed);
+    var total = sumAmounts(confirmedFiltered);
+    var pendingCount = filtered.length - confirmedFiltered.length;
     var sorted = filtered.slice().sort(function(a,b){ return b.date.localeCompare(a.date); });
-    var categoryOptions = CATEGORIES.map(function(c){ return '<option value="' + escapeHtml(c) + '">' + escapeHtml(c) + '</option>'; }).join("");
+    var gastosOnly = confirmedFiltered.filter(function(e){ return e.tipo !== "pago_equipo" && !esPagoSat(e); });
+    var conFacturaList = gastosOnly.filter(function(e){ return e.conFactura; });
+    var sinFacturaList = gastosOnly.filter(function(e){ return !e.conFactura; });
+    var ivaAcred = conFacturaList.reduce(function(s, e){ return s + Number(e.iva || 0); }, 0);
+    var porMetodo = {};
+    confirmedFiltered.forEach(function(e){ var k = e.metodo || "Sin dato"; porMetodo[k] = (porMetodo[k] || 0) + Number(e.amount || 0); });
+    var metodoLine = Object.keys(porMetodo).map(function(k){ return escapeHtml(k) + ' <strong class="mono">' + currency(porMetodo[k]) + '</strong>'; }).join(' &nbsp;·&nbsp; ');
+    var resumenLine = confirmedFiltered.length === 0 ? "" :
+      '<p class="hint" style="margin:0 0 10px;">' +
+        (tipoFilter !== "pago_equipo" ? 'Con factura <strong class="mono">' + currency(sumAmounts(conFacturaList)) + '</strong> (IVA acreditable <strong class="mono">' + currency(ivaAcred) + '</strong>) &nbsp;·&nbsp; Sin factura <strong class="mono">' + currency(sumAmounts(sinFacturaList)) + '</strong><br>' : '') +
+        'Por método: ' + metodoLine +
+      '</p>';
+    var categoryOptions = CATEGORIES.filter(function(c){ return c !== CAT_EQUIPO; }).map(function(c){ return '<option value="' + escapeHtml(c) + '">' + escapeHtml(c) + '</option>'; }).join("");
+    var metodoOptions = METODOS_PAGO.map(function(m){ return '<option value="' + escapeHtml(m) + '">' + escapeHtml(m) + '</option>'; }).join("");
+    var clienteOptions = clientesConocidos().map(function(c){ return '<option value="' + escapeHtml(c) + '"></option>'; }).join("");
+    var recPend = recurrentesPendientes();
+    var recBanner = recPend.length === 0 ? "" :
+      '<p class="hint" style="color:var(--stamp-red);">⚠ ' + recPend.length + ' gasto(s) recurrente(s) sin registrar este mes: <strong>' +
+      recPend.map(function(t){ return escapeHtml(t.nombre); }).join(", ") + '</strong> — búscalos en "Gastos recurrentes" más abajo.</p>';
+    var conceptoOptions = CONCEPTOS_EQUIPO.map(function(c){ return '<option value="' + escapeHtml(c) + '">' + escapeHtml(c) + '</option>'; }).join("");
     var teamOptions = state.team.map(function(m){ return '<option value="' + m.id + '">' + escapeHtml(m.name) + '</option>'; }).join("");
     var budgetInputs = CATEGORIES.map(function(c){
       var val = state.budgets[c] || "";
@@ -760,44 +1039,94 @@
     }).join("");
 
     return (
-      '<h2 class="panel-title">Gastos</h2>' +
+      '<h2 class="panel-title">Gastos y salidas de dinero</h2>' +
+      recBanner +
       '<form class="card form-grid" id="expense-form">' +
+        '<label class="span-2">Tipo de salida<select name="tipo">' +
+          '<option value="gasto">Gasto de la empresa (renta, software, impuestos, proveedores…)</option>' +
+          '<option value="pago_equipo">Pago al equipo (sueldo, retiro, comisión, anticipo…)</option>' +
+        '</select></label>' +
         '<label>Monto<input type="number" min="0" step="0.01" name="amount" placeholder="0.00" required /></label>' +
-        '<label>Categoría<select name="category">' + categoryOptions + '</select></label>' +
-        '<label>Pagó<select name="paidBy">' + teamOptions + '</select></label>' +
+        '<label data-only-gasto>Categoría<select name="category">' + categoryOptions + '</select></label>' +
+        '<label data-only-equipo style="display:none;">Beneficiario (quién recibe)<select name="beneficiario">' + teamOptions + '</select></label>' +
+        '<label data-only-equipo style="display:none;">Concepto<select name="concepto">' + conceptoOptions + '</select></label>' +
+        '<label>Pagó (quién hizo el pago)<select name="paidBy">' + teamOptions + '</select></label>' +
+        '<label>Método de pago<select name="metodo">' + metodoOptions + '</select></label>' +
         '<label>Fecha<input type="date" name="date" value="' + todayISO() + '" /></label>' +
-        '<label class="span-2">Descripción<input type="text" name="description" placeholder="Ej. Papelería para oficina" /></label>' +
-        '<label class="span-2">Foto del recibo (opcional)<input type="file" accept="image/*" capture="environment" id="expense-photo-input" /></label>' +
+        '<label data-only-gasto style="flex-direction:row; align-items:center; gap:8px; font-size:13px;"><input type="checkbox" name="conFactura" style="width:auto;" /> Tengo factura (CFDI) de este gasto</label>' +
+        '<label data-only-factura style="display:none;">IVA incluido en el monto<select name="ivaTasa"><option value="16">16 %</option><option value="0">Exento / 0 %</option></select></label>' +
+        '<label data-only-gasto style="flex-direction:row; align-items:center; gap:8px; font-size:13px;"><input type="checkbox" name="deBolsillo" style="width:auto;" /> Lo pagó un socio de su bolsillo (la empresa le debe reembolso)</label>' +
+        '<label data-only-gasto>Cliente / proyecto (opcional)<input type="text" name="cliente" list="clientes-list" placeholder="Ej. HEMCI" /><datalist id="clientes-list">' + clienteOptions + '</datalist></label>' +
+        '<label data-only-equipo style="display:none;">Descontar de anticipo pendiente (opcional)<input type="number" min="0" step="0.01" name="descuentoAnticipo" placeholder="0.00" /><span class="hint" id="anticipo-hint" style="margin:0;"></span></label>' +
+        '<label class="span-2">Descripción<input type="text" name="description" placeholder="Ej. Papelería para oficina / Quincena 1 de octubre" /></label>' +
+        '<label class="span-2">Foto del recibo o comprobante (opcional)<input type="file" accept="image/*" capture="environment" id="expense-photo-input" /></label>' +
         '<button type="submit" class="btn-primary">+ Registrar gasto</button>' +
       '</form>' +
+      pagosEquipoCardHTML(monthFilter) +
+      recurrentesCardHTML() +
       '<div class="list-header">' +
         '<input type="month" id="month-filter" value="' + monthFilter + '" />' +
+        '<select id="gastos-tipo-filter" style="width:auto;">' +
+          '<option value="todos"' + (tipoFilter === "todos" ? " selected" : "") + '>Todas las salidas</option>' +
+          '<option value="gasto"' + (tipoFilter === "gasto" ? " selected" : "") + '>Solo gastos</option>' +
+          '<option value="pago_equipo"' + (tipoFilter === "pago_equipo" ? " selected" : "") + '>Solo pagos al equipo</option>' +
+        '</select>' +
+        '<select id="gastos-factura-filter" style="width:auto;">' +
+          '<option value="todas"' + (facturaFilter === "todas" ? " selected" : "") + '>Con y sin factura</option>' +
+          '<option value="con"' + (facturaFilter === "con" ? " selected" : "") + '>Solo con factura</option>' +
+          '<option value="sin"' + (facturaFilter === "sin" ? " selected" : "") + '>Solo sin factura</option>' +
+        '</select>' +
         '<span class="total-chip">Total confirmado: ' + currency(total) + '</span>' +
         (pendingCount > 0 ? '<span class="hint" style="margin:0;">' + pendingCount + ' pendiente(s) de confirmar</span>' : '') +
         '<button type="button" class="btn-secondary" style="margin-top:0;" id="export-gastos-btn">Exportar CSV</button>' +
       '</div>' +
+      resumenLine +
       '<div class="card table-wrap">' +
-        (sorted.length === 0 ? '<p class="empty">Aún no hay gastos registrados en este periodo.</p>' :
+        (sorted.length === 0 ? '<p class="empty">Aún no hay registros en este periodo.</p>' :
           '<table><thead><tr><th>Fecha</th><th>Categoría</th><th>Descripción</th><th>Pagó</th><th>Monto</th><th>Estado</th><th>Recibo</th><th></th></tr></thead><tbody>' +
           sorted.map(function(e){
             return '<tr><td class="mono" data-label="Fecha">' + formatDateMX(e.date) + '</td><td data-label="Categoría">' + escapeHtml(e.category) + '</td><td data-label="Descripción">' +
-              (escapeHtml(e.description) || "—") + '</td><td data-label="Pagó">' + escapeHtml(memberName(e.paidBy)) + '</td>' +
+              expenseDescHTML(e) + '</td><td data-label="Pagó">' + escapeHtml(memberName(e.paidBy)) + '</td>' +
               '<td class="mono amount" data-label="Monto">' + currency(e.amount) + '</td>' +
               '<td data-label="Estado">' + confirmStampHTML(e) + confirmControlHTML(e, "expenses") + '</td>' +
               '<td data-label="Recibo">' + (e.hasReceipt ?
                 ('<button type="button" class="link-btn" data-view-receipt="' + e.id + '">Ver recibo</button><div id="receipt-' + e.id + '" style="display:none; margin-top:6px;"></div>') : '—') + '</td>' +
-              '<td data-label=""><button class="icon-btn" data-delete-expense="' + e.id + '" aria-label="Eliminar gasto">✕ Eliminar</button></td></tr>';
+              '<td data-label=""><button type="button" class="link-btn" data-repeat-expense="' + e.id + '">Repetir</button> · <button type="button" class="link-btn" data-make-recurrente="' + e.id + '">Hacer recurrente</button> · <button class="icon-btn" data-delete-expense="' + e.id + '" aria-label="Eliminar registro">✕ Eliminar</button></td></tr>';
           }).join("") + '</tbody></table>') +
       '</div>' +
-      '<div class="card">' +
-        '<h3 class="card-title">Presupuestos mensuales por categoría</h3>' +
-        '<p class="hint">Deja vacío si no quieres poner límite. Se muestran como referencia en el Resumen.</p>' +
+      '<details class="card" id="budgets-details"' + (state.presupuestosAbierto ? " open" : "") + '>' +
+        '<summary class="card-title" style="cursor:pointer; margin:0;">Presupuestos mensuales por categoría <span class="hint" style="margin:0; font-family:var(--font-body); font-size:12px;">(clic para desplegar o contraer)</span></summary>' +
+        '<p class="hint" style="margin-top:12px;">Deja vacío si no quieres poner límite. Se muestran como referencia en el Resumen.</p>' +
         '<div class="form-grid">' + budgetInputs + '<button type="button" class="btn-primary" id="save-budgets-btn">Guardar presupuestos</button></div>' +
-      '</div>'
+      '</details>'
     );
   }
+  function applyGastoTipo() {
+    var form = document.getElementById("expense-form");
+    if (!form) return;
+    var isEq = form.elements["tipo"].value === "pago_equipo";
+    var conFactura = !isEq && form.elements["conFactura"].checked;
+    form.querySelectorAll("[data-only-gasto]").forEach(function(el){ el.style.display = isEq ? "none" : ""; });
+    form.querySelectorAll("[data-only-equipo]").forEach(function(el){ el.style.display = isEq ? "" : "none"; });
+    form.querySelectorAll("[data-only-factura]").forEach(function(el){ el.style.display = conFactura ? "" : "none"; });
+    var btn = form.querySelector('button[type="submit"]');
+    if (btn) btn.textContent = isEq ? "+ Registrar pago al equipo" : "+ Registrar gasto";
+    var hint = document.getElementById("anticipo-hint");
+    if (hint) {
+      var pend = isEq ? cuentaSocio(form.elements["beneficiario"].value).anticipoPendiente : 0;
+      hint.textContent = pend > 0 ? "Anticipo pendiente de esta persona: " + currency(pend) : "Esta persona no tiene anticipos pendientes.";
+    }
+  }
+
   function bindGastosEvents() {
-    document.getElementById("expense-form").addEventListener("submit", async function(e){
+    var expenseForm = document.getElementById("expense-form");
+    var budgetsDetails = document.getElementById("budgets-details");
+    if (budgetsDetails) budgetsDetails.addEventListener("toggle", function(){ state.presupuestosAbierto = budgetsDetails.open; });
+    expenseForm.elements["tipo"].addEventListener("change", applyGastoTipo);
+    expenseForm.elements["conFactura"].addEventListener("change", applyGastoTipo);
+    expenseForm.elements["beneficiario"].addEventListener("change", applyGastoTipo);
+    applyGastoTipo();
+    expenseForm.addEventListener("submit", async function(e){
       e.preventDefault();
       var fd = new FormData(e.target);
       var amount = Number(fd.get("amount"));
@@ -808,20 +1137,93 @@
         try {
           photoDataUrl = await readAndCompressImage(fileInput.files[0], 1200, 0.7);
         } catch (err) {
-          flash("No se pudo procesar la foto, se guardó el gasto sin ella.", true);
+          flash("No se pudo procesar la foto, se guardó el registro sin ella.", true);
         }
       }
-      addExpense({
+      var esEquipo = fd.get("tipo") === "pago_equipo";
+      var exp = {
         amount: amount,
-        category: fd.get("category"),
+        category: esEquipo ? CAT_EQUIPO : fd.get("category"),
         paidBy: fd.get("paidBy"),
+        metodo: fd.get("metodo") || "",
         date: fd.get("date") || todayISO(),
         description: (fd.get("description") || "").trim()
-      }, photoDataUrl);
+      };
+      if (esEquipo) {
+        exp.tipo = "pago_equipo";
+        exp.beneficiario = fd.get("beneficiario");
+        exp.concepto = fd.get("concepto");
+        var descuento = Number(fd.get("descuentoAnticipo")) || 0;
+        if (descuento > 0) {
+          var pendiente = cuentaSocio(exp.beneficiario).anticipoPendiente;
+          if (descuento > pendiente + 0.001) {
+            flash("El descuento (" + currency(descuento) + ") es mayor al anticipo pendiente (" + currency(pendiente) + ").", true);
+            return;
+          }
+          exp.descuentoAnticipo = r2(descuento);
+        }
+      } else {
+        if (fd.get("conFactura")) {
+          var tasa = Number(fd.get("ivaTasa")) || 0;
+          exp.conFactura = true;
+          exp.ivaRate = tasa;
+          exp.iva = ivaFromAmount(amount, tasa);
+        }
+        if (fd.get("deBolsillo")) exp.deBolsillo = true;
+        var cli = (fd.get("cliente") || "").trim();
+        if (cli) exp.cliente = cli;
+      }
+      addExpense(exp, photoDataUrl);
     });
     document.getElementById("month-filter").addEventListener("change", function(e){
       state.gastosMonthFilter = e.target.value;
       renderTabContent();
+    });
+    document.getElementById("gastos-tipo-filter").addEventListener("change", function(e){
+      state.gastosTipoFilter = e.target.value;
+      renderTabContent();
+    });
+    document.getElementById("gastos-factura-filter").addEventListener("change", function(e){
+      state.gastosFacturaFilter = e.target.value;
+      renderTabContent();
+    });
+    document.querySelectorAll("[data-make-recurrente]").forEach(function(btn){
+      btn.addEventListener("click", function(){ hacerRecurrente(btn.dataset.makeRecurrente); });
+    });
+    document.querySelectorAll("[data-rec-registrar]").forEach(function(btn){
+      btn.addEventListener("click", function(){ registrarRecurrente(btn.dataset.recRegistrar); });
+    });
+    document.querySelectorAll("[data-rec-quitar]").forEach(function(btn){
+      btn.addEventListener("click", function(){
+        if (confirm("¿Dejar de repetir este gasto cada mes? Los registros anteriores se conservan.")) quitarRecurrente(btn.dataset.recQuitar);
+      });
+    });
+    document.querySelectorAll("[data-repeat-expense]").forEach(function(btn){
+      btn.addEventListener("click", function(){
+        var src = state.expenses.find(function(x){ return x.id === btn.dataset.repeatExpense; });
+        if (!src) return;
+        var f = document.getElementById("expense-form");
+        var esEq = src.tipo === "pago_equipo";
+        f.elements["tipo"].value = esEq ? "pago_equipo" : "gasto";
+        f.elements["amount"].value = src.amount;
+        if (!esEq) f.elements["category"].value = src.category;
+        f.elements["paidBy"].value = src.paidBy;
+        if (src.metodo) f.elements["metodo"].value = src.metodo;
+        f.elements["conFactura"].checked = !esEq && !!src.conFactura;
+        if (!esEq && src.conFactura) f.elements["ivaTasa"].value = String(src.ivaRate != null ? src.ivaRate : 16);
+        f.elements["deBolsillo"].checked = !esEq && !!src.deBolsillo;
+        f.elements["cliente"].value = (!esEq && src.cliente) || "";
+        f.elements["descuentoAnticipo"].value = "";
+        if (esEq) {
+          f.elements["beneficiario"].value = src.beneficiario;
+          f.elements["concepto"].value = src.concepto || CONCEPTOS_EQUIPO[0];
+        }
+        f.elements["description"].value = src.description || "";
+        f.elements["date"].value = todayISO();
+        applyGastoTipo();
+        try { window.scrollTo(0, 0); } catch (err) {}
+        flash("Datos copiados al formulario — revisa monto y fecha, y regístralo.");
+      });
     });
     document.querySelectorAll("[data-delete-expense]").forEach(function(btn){
       btn.addEventListener("click", function(){ deleteExpense(btn.dataset.deleteExpense); });
@@ -856,13 +1258,25 @@
     var exportBtn = document.getElementById("export-gastos-btn");
     if (exportBtn) exportBtn.addEventListener("click", function(){
       var monthFilter = state.gastosMonthFilter;
-      var rows = state.expenses.filter(function(e){ return !monthFilter || (e.date && e.date.slice(0,7) === monthFilter); })
-        .slice().sort(function(a,b){ return b.date.localeCompare(a.date); });
-      var out = [["Fecha","Categoría","Descripción","Pagó","Monto","Estado"]];
+      var tipoFilter = state.gastosTipoFilter || "todos";
+      var facturaFilter = state.gastosFacturaFilter || "todas";
+      var rows = state.expenses.filter(function(e){
+        if (monthFilter && !(e.date && e.date.slice(0,7) === monthFilter)) return false;
+        if (tipoFilter === "pago_equipo" && e.tipo !== "pago_equipo") return false;
+        if (tipoFilter === "gasto" && e.tipo === "pago_equipo") return false;
+        if (facturaFilter === "con" && !(e.tipo !== "pago_equipo" && e.conFactura)) return false;
+        if (facturaFilter === "sin" && !(e.tipo !== "pago_equipo" && !e.conFactura)) return false;
+        return true;
+      }).slice().sort(function(a,b){ return b.date.localeCompare(a.date); });
+      var out = [["Fecha","Tipo","Categoría","Beneficiario","Concepto","Descripción","Pagó","Método","Con factura","IVA","Cliente / proyecto","De bolsillo","Descuento de anticipo","Monto","Estado"]];
       rows.forEach(function(e){
-        out.push([formatDateMX(e.date), e.category, e.description || "", memberName(e.paidBy), e.amount, isFullyConfirmed(e) ? "Confirmada" : "Pendiente"]);
+        var eq = e.tipo === "pago_equipo";
+        out.push([formatDateMX(e.date), eq ? "Pago al equipo" : "Gasto", e.category, eq ? memberName(e.beneficiario) : "", eq ? (e.concepto || "") : "",
+          e.description || "", memberName(e.paidBy), e.metodo || "", (eq || esPagoSat(e)) ? "" : (e.conFactura ? "Sí" : "No"), e.conFactura ? (e.iva || 0) : "",
+          e.cliente || "", e.deBolsillo ? "Sí" : "", e.descuentoAnticipo || "",
+          e.amount, isFullyConfirmed(e) ? "Confirmada" : "Pendiente"]);
       });
-      downloadCSV("gastos-" + (monthFilter || "todos") + ".csv", out);
+      downloadCSV("gastos-" + (monthFilter || "todos") + (tipoFilter !== "todos" ? "-" + tipoFilter : "") + ".csv", out);
     });
     var saveBudgetsBtn = document.getElementById("save-budgets-btn");
     if (saveBudgetsBtn) saveBudgetsBtn.addEventListener("click", async function(){
@@ -2125,6 +2539,8 @@
 
     var periodExpenses = confirmedExpenses.filter(function(e){ return !monthFilter || (e.date && e.date.slice(0, 7) === monthFilter); });
     var gastosPeriodo = periodExpenses.reduce(function(s, e){ return s + Number(e.amount || 0); }, 0);
+    var pagosEquipoPeriodo = periodExpenses.filter(function(e){ return e.tipo === "pago_equipo"; })
+      .reduce(function(s, e){ return s + Number(e.amount || 0); }, 0);
 
     var periodNotas = notas.filter(function(n){
       var f = n.fecha || (n.createdAt ? (new Date(n.createdAt)).toISOString().slice(0, 10) : "");
@@ -2191,7 +2607,8 @@
         '<div class="stat-card"><div class="stat-label">Facturado' + (monthFilter ? " (mes)" : " (histórico)") + '</div><div class="stat-value">' + currency(facturadoPeriodo) + '</div></div>' +
         '<div class="stat-card"><div class="stat-label">Cobrado' + (monthFilter ? " (mes)" : " (histórico)") + '</div><div class="stat-value">' + currency(cobradoPeriodo) + '</div></div>' +
         '<div class="stat-card"><div class="stat-label">Nos deben (por cobrar)</div><div class="stat-value" style="color:' + (porCobrar > 0 ? "var(--stamp-red)" : "inherit") + ';">' + currency(porCobrar) + '</div></div>' +
-        '<div class="stat-card"><div class="stat-label">Gastos' + (monthFilter ? " (mes)" : " (histórico)") + '</div><div class="stat-value">' + currency(gastosPeriodo) + '</div></div>' +
+        '<div class="stat-card"><div class="stat-label">Salidas totales' + (monthFilter ? " (mes)" : " (histórico)") + '</div><div class="stat-value">' + currency(gastosPeriodo) + '</div></div>' +
+        '<div class="stat-card"><div class="stat-label">↳ Pagos al equipo' + (monthFilter ? " (mes)" : "") + '</div><div class="stat-value">' + currency(pagosEquipoPeriodo) + '</div></div>' +
       '</div>' +
       '<div class="card">' +
         '<h3 class="card-title">Capital de los socios (histórico, sin filtro de mes)</h3>' +
@@ -2203,10 +2620,13 @@
         '</div>' +
         '<p class="hint" style="margin:10px 0 0;">Capital disponible = aportaciones confirmadas + abonos de clientes ya cobrados − gastos confirmados. Si da negativo, es lo que el negocio todavía le debe a los socios.</p>' +
       '</div>' +
+      ivaCardHTML(monthFilter) +
+      cuentasSociosCardHTML() +
       '<div class="card">' +
         '<h3 class="card-title">Por cobrar — clientes que nos deben (' + pendientesCobro.length + ')</h3>' +
         porCobrarHTML +
       '</div>' +
+      rentabilidadCardHTML() +
       '<div class="card">' +
         '<h3 class="card-title">Gastos por categoría' + (monthFilter ? "" : " — histórico completo") + '</h3>' +
         (topCategories.length === 0 ? '<p class="empty">Sin gastos en este periodo.</p>' :
@@ -2215,7 +2635,8 @@
               '<div class="cat-bar-track"><div class="cat-bar-fill" style="width:' + ((entry[1] / maxCat) * 100) + '%"></div></div>' +
               '<span class="cat-bar-value mono">' + currency(entry[1]) + '</span></div>';
           }).join("")) +
-      '</div>'
+      '</div>' +
+      corteCardHTML(monthFilter)
     );
   }
 
@@ -2224,12 +2645,269 @@
     if (mf) mf.addEventListener("change", function(e){ state.balanceMonthFilter = e.target.value; renderTabContent(); });
     var clearBtn = document.getElementById("balance-month-clear");
     if (clearBtn) clearBtn.addEventListener("click", function(){ state.balanceMonthFilter = ""; renderTabContent(); });
+    var mes = state.balanceMonthFilter;
+    var corteCerrar = document.getElementById("corte-cerrar-btn");
+    if (corteCerrar) corteCerrar.addEventListener("click", function(){ cerrarMes(mes); });
+    var corteReabrir = document.getElementById("corte-reabrir-btn");
+    if (corteReabrir) corteReabrir.addEventListener("click", function(){ reabrirMes(mes); });
+    var cortePdf = document.getElementById("corte-pdf-btn");
+    if (cortePdf) cortePdf.addEventListener("click", function(){ generateCortePDF(mes); });
+    var corteCsv = document.getElementById("corte-csv-btn");
+    if (corteCsv) corteCsv.addEventListener("click", function(){ exportCorteCSV(mes); });
     document.querySelectorAll("[data-nota-marcarpagada]").forEach(function(btn){
       btn.addEventListener("click", function(){
         var n = state.notas.find(function(x){ return x.id === btn.dataset.notaMarcarpagada; });
         if (n) addAbono(n.id, notaSaldo(n), todayISO(), "");
       });
     });
+  }
+
+  // ---------- Balance: tarjetas extra ----------
+  function ivaCardHTML(mes) {
+    var s = ivaStats(mes);
+    var pend = s.pendienteHist;
+    function card(label, value, color) {
+      return '<div class="stat-card"><div class="stat-label">' + label + '</div><div class="stat-value" style="font-size:18px;' + (color ? " color:" + color + ";" : "") + '">' + currency(value) + '</div></div>';
+    }
+    return '<div class="card"><h3 class="card-title">Impuestos (estimado)' + (mes ? " — " + mesLabel(mes) : " — histórico") + '</h3>' +
+      '<div class="stat-grid">' +
+        card("IVA cobrado a clientes", s.cobrado) +
+        card("IVA acreditable (gastos con factura)", s.acreditable) +
+        card("IVA neto del periodo", s.neto, s.neto > 0 ? "var(--stamp-red)" : "") +
+        card("IVA pagado al SAT", s.pagadoSat) +
+        card("ISR pagado al SAT", s.isrPagado) +
+        card(pend >= 0 ? "IVA pendiente de pagar (acumulado)" : "IVA a favor (acumulado)", Math.abs(pend), pend > 0 ? "var(--stamp-red)" : "var(--stamp-green)") +
+      '</div>' +
+      '<p class="hint" style="margin:10px 0 0;">Estimado con el IVA proporcional de cada abono cobrado y el IVA de los gastos con factura. Registra tus pagos al SAT con las categorías "' + CAT_IVA_SAT + '" y "' + CAT_ISR_SAT + '". Confírmalo siempre con tu contador.</p></div>';
+  }
+
+  function rentabilidadCardHTML() {
+    var groups = {}, keys = [];
+    function groupFor(name) {
+      var k = normCliente(name);
+      if (!k) return null;
+      var match = keys.find(function(x){ return x === k || x.indexOf(k) === 0 || k.indexOf(x) === 0; });
+      if (!match) { match = k; keys.push(k); groups[k] = { name: String(name).trim(), facturado: 0, cobrado: 0, gastos: 0 }; }
+      return groups[match];
+    }
+    (state.notas || []).forEach(function(n){ var g = groupFor(n.cliente); if (g) { g.facturado += Number(n.total || 0); g.cobrado += notaAbonado(n); } });
+    state.expenses.filter(isFullyConfirmed).filter(function(e){ return e.tipo !== "pago_equipo" && e.cliente; })
+      .forEach(function(e){ var g = groupFor(e.cliente); if (g) g.gastos += Number(e.amount || 0); });
+    var list = keys.map(function(k){ return groups[k]; }).sort(function(a, b){ return b.facturado - a.facturado; });
+    var body = list.length === 0
+      ? '<p class="hint" style="margin:0;">Asigna un <strong>Cliente / proyecto</strong> a tus gastos (campo en el formulario) para ver cuánto te deja cada cliente.</p>'
+      : '<table><thead><tr><th>Cliente / proyecto</th><th>Facturado</th><th>Cobrado</th><th>Gastos asignados</th><th>Margen</th></tr></thead><tbody>' +
+        list.map(function(g){
+          var margen = r2(g.facturado - g.gastos);
+          var pct = g.facturado > 0 ? Math.round((margen / g.facturado) * 100) + "%" : "—";
+          return '<tr><td data-label="Cliente"><strong>' + escapeHtml(g.name) + '</strong></td>' +
+            '<td class="mono" data-label="Facturado">' + currency(g.facturado) + '</td>' +
+            '<td class="mono" data-label="Cobrado">' + currency(g.cobrado) + '</td>' +
+            '<td class="mono" data-label="Gastos">' + currency(g.gastos) + '</td>' +
+            '<td class="mono amount" data-label="Margen" style="color:' + (margen < 0 ? "var(--stamp-red)" : "var(--stamp-green)") + ';">' + currency(margen) + ' <span class="hint" style="margin:0;">(' + pct + ')</span></td></tr>';
+        }).join("") + '</tbody></table>';
+    return '<div class="card"><h3 class="card-title">Rentabilidad por cliente (histórico)</h3>' + body +
+      (list.length ? '<p class="hint" style="margin:10px 0 0;">Margen = facturado − gastos asignados a ese cliente. No incluye gastos generales ni pagos al equipo.</p>' : '') + '</div>';
+  }
+
+  function cuentasSociosCardHTML() {
+    var rows = state.team.map(function(m){
+      var c = cuentaSocio(m.id);
+      var saldo = c.neto > 0 ? '<span class="stamp stamp-pendiente">La empresa le debe ' + currency(c.neto) + '</span>'
+        : (c.neto < 0 ? '<span class="stamp stamp-en_proceso">Debe ' + currency(Math.abs(c.neto)) + ' a la empresa</span>' : '<span class="stamp stamp-hecho">Al corriente</span>');
+      return '<tr><td data-label="Socio"><strong>' + escapeHtml(m.name) + '</strong></td>' +
+        '<td class="mono" data-label="Gastos de su bolsillo">' + currency(c.bolsillo) + '</td>' +
+        '<td class="mono" data-label="Reembolsos recibidos">' + currency(c.reembolsado) + '</td>' +
+        '<td class="mono" data-label="Anticipos pendientes">' + currency(c.anticipoPendiente) + '</td>' +
+        '<td data-label="Saldo">' + saldo + '</td></tr>';
+    }).join("");
+    return '<div class="card"><h3 class="card-title">Cuentas con los socios</h3>' +
+      '<table><thead><tr><th>Socio</th><th>Gastos de su bolsillo</th><th>Reembolsos recibidos</th><th>Anticipos pendientes</th><th>Saldo</th></tr></thead><tbody>' + rows + '</tbody></table>' +
+      '<p class="hint" style="margin:10px 0 0;">Se llena al marcar "Lo pagó un socio de su bolsillo" en un gasto, y al registrar pagos al equipo con concepto "Reembolso de gastos" o "Anticipo" (descontando el anticipo en el siguiente sueldo).</p></div>';
+  }
+
+  function corteCardHTML(mes) {
+    if (!mes) return '<div class="card"><h3 class="card-title">Corte de mes</h3><p class="hint" style="margin:0;">Elige un mes arriba para cerrarlo y descargar el corte para tu contador.</p></div>';
+    var c = cierreDe(mes);
+    var status = c
+      ? '<span class="stamp stamp-hecho">Cerrado</span> <span class="hint" style="margin:0;">el ' + formatDateTimeMX(c.fecha) + ' por ' + escapeHtml(c.por || "—") + '</span>'
+      : '<span class="stamp stamp-en_proceso">Abierto</span>';
+    return '<div class="card"><h3 class="card-title">Corte de ' + mesLabel(mes) + '</h3>' +
+      '<div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:10px;">' + status + '</div>' +
+      '<div style="display:flex; gap:10px; flex-wrap:wrap;">' +
+        '<button type="button" class="btn-secondary" style="margin-top:0;" id="corte-pdf-btn">Descargar corte (PDF)</button>' +
+        '<button type="button" class="btn-secondary" style="margin-top:0;" id="corte-csv-btn">Descargar detalle (CSV)</button>' +
+        (c ? '<button type="button" class="btn-secondary" style="margin-top:0;" id="corte-reabrir-btn">Reabrir mes</button>'
+           : '<button type="button" class="btn-primary" style="margin-top:0; grid-column:auto;" id="corte-cerrar-btn">Cerrar mes</button>') +
+      '</div>' +
+      '<p class="hint" style="margin:10px 0 0;">Al cerrar un mes ya no se pueden registrar ni eliminar gastos con fecha de ese mes (hay que reabrirlo). El corte incluye ingresos cobrados, salidas, IVA estimado y el detalle para el contador.</p></div>';
+  }
+
+  // ---------- Corte de mes ----------
+  function corteMes(mes) {
+    var conf = state.expenses.filter(isFullyConfirmed).filter(function(e){ return inMonth(e.date, mes); })
+      .sort(function(a, b){ return (a.date || "").localeCompare(b.date || ""); });
+    var gastos = conf.filter(function(e){ return e.tipo !== "pago_equipo"; });
+    var gastosFact = gastos.filter(function(e){ return !esPagoSat(e); });
+    var equipo = conf.filter(function(e){ return e.tipo === "pago_equipo"; });
+    var abonos = [];
+    (state.notas || []).forEach(function(n){
+      notaAbonos(n).forEach(function(a){ if (inMonth(a.fecha, mes)) abonos.push({ folio: n.folio, cliente: n.cliente, fecha: a.fecha, monto: Number(a.monto || 0), metodo: a.metodo || "" }); });
+    });
+    abonos.sort(function(a, b){ return (a.fecha || "").localeCompare(b.fecha || ""); });
+    var facturado = (state.notas || []).filter(function(n){ return inMonth(n.fecha || (n.createdAt ? (new Date(n.createdAt)).toISOString().slice(0, 10) : ""), mes); })
+      .reduce(function(s, n){ return s + Number(n.total || 0); }, 0);
+    var porMetodo = {};
+    conf.forEach(function(e){ var k = e.metodo || "Sin dato"; porMetodo[k] = (porMetodo[k] || 0) + Number(e.amount || 0); });
+    var cobrado = abonos.reduce(function(s, a){ return s + a.monto; }, 0);
+    var totalSalidas = sumAmounts(conf);
+    return {
+      mes: mes, salidas: conf, gastos: gastos, equipo: equipo, abonos: abonos,
+      facturado: r2(facturado), cobrado: r2(cobrado), totalSalidas: r2(totalSalidas), totalEquipo: r2(sumAmounts(equipo)),
+      conFactura: r2(sumAmounts(gastosFact.filter(function(e){ return e.conFactura; }))), sinFactura: r2(sumAmounts(gastosFact.filter(function(e){ return !e.conFactura; }))),
+      pagosSat: r2(sumAmounts(gastos.filter(esPagoSat))),
+      porMetodo: porMetodo, iva: ivaStats(mes), resultado: r2(cobrado - totalSalidas),
+      porCobrarTotal: r2((state.notas || []).reduce(function(s, n){ return s + notaSaldo(n); }, 0)),
+      sinConfirmar: state.expenses.filter(function(e){ return inMonth(e.date, mes) && !isFullyConfirmed(e); }).length
+    };
+  }
+
+  async function cerrarMes(mes) {
+    var c = corteMes(mes);
+    var msg = "¿Cerrar " + mesLabel(mes) + "?" +
+      (c.sinConfirmar ? "\n\nHay " + c.sinConfirmar + " movimiento(s) sin confirmar con clave: NO cuentan en el corte." : "") +
+      "\n\nYa no se podrán registrar ni eliminar gastos de ese mes hasta reabrirlo.";
+    if (!confirm(msg)) return;
+    var rec = { mes: mes, fecha: Date.now(), por: state.authName || "Alguien",
+      resumen: { facturado: c.facturado, cobrado: c.cobrado, salidas: c.totalSalidas, pagosEquipo: c.totalEquipo, resultado: c.resultado, ivaNeto: c.iva.neto } };
+    var next = state.cierres.filter(function(x){ return x.mes !== mes; }).concat([rec]);
+    var ok = await saveKey("cierres", next);
+    if (!ok) { flash("No se pudo cerrar el mes.", true); return; }
+    state.cierres = next;
+    logActivity("Mes cerrado: " + mesLabel(mes) + " (cobrado " + currency(c.cobrado) + ", salidas " + currency(c.totalSalidas) + ")");
+    flash(mesLabel(mes) + " cerrado.");
+    renderTabContent();
+  }
+
+  async function reabrirMes(mes) {
+    if (!confirm("¿Reabrir " + mesLabel(mes) + "? Se podrán volver a registrar y eliminar gastos de ese mes.")) return;
+    var next = state.cierres.filter(function(x){ return x.mes !== mes; });
+    var ok = await saveKey("cierres", next);
+    if (!ok) { flash("No se pudo reabrir el mes.", true); return; }
+    state.cierres = next;
+    logActivity("Mes reabierto: " + mesLabel(mes));
+    flash(mesLabel(mes) + " reabierto.");
+    renderTabContent();
+  }
+
+  function exportCorteCSV(mes) {
+    var c = corteMes(mes);
+    var out = [["Fecha", "Tipo", "Concepto / descripción", "Cliente / beneficiario", "Método", "Con factura", "IVA", "Ingreso", "Salida"]];
+    c.abonos.forEach(function(a){
+      out.push([formatDateMX(a.fecha), "Ingreso (abono)", "Nota " + (a.folio || ""), a.cliente || "", a.metodo, "", "", a.monto, ""]);
+    });
+    c.salidas.forEach(function(e){
+      var eq = e.tipo === "pago_equipo";
+      out.push([formatDateMX(e.date), eq ? "Pago al equipo" : "Gasto", eq ? ((e.concepto || "Pago") + (e.description ? " — " + e.description : "")) : ((e.category || "") + (e.description ? " — " + e.description : "")),
+        eq ? memberName(e.beneficiario) : (e.cliente || ""), e.metodo || "", (eq || esPagoSat(e)) ? "" : (e.conFactura ? "Sí" : "No"), e.conFactura ? (e.iva || 0) : "", "", e.amount]);
+    });
+    downloadCSV("corte-" + mes + ".csv", out);
+  }
+
+  function generateCortePDF(mes) {
+    if (!window.jspdf || !window.jspdf.jsPDF) { flash("No se pudo cargar el generador de PDF. Revisa tu conexión e intenta de nuevo.", true); return; }
+    var c = corteMes(mes);
+    var cierre = cierreDe(mes);
+    var doc = new window.jspdf.jsPDF({ unit: "mm", format: "letter" });
+    var pw = doc.internal.pageSize.getWidth(), ph = doc.internal.pageSize.getHeight();
+    var margin = 18, y = 18;
+    y = drawGalexHeader(doc, pw, margin, y, "Corte de mes", ["Periodo: " + mesLabel(mes), "Estado: " + (cierre ? "Cerrado" : "Preliminar (abierto)"), "Generado: " + formatDateMX(todayISO())]);
+    doc.setDrawColor(198, 208, 180); doc.line(margin, y, pw - margin, y); y += 9;
+
+    function ensure(h) { if (y + h > ph - 20) { doc.addPage(); y = 22; } }
+    function title(t) {
+      ensure(14);
+      doc.setFont("helvetica", "bold"); doc.setFontSize(11); doc.setTextColor(31, 42, 60);
+      doc.text(t, margin, y); y += 2; doc.setDrawColor(198, 208, 180); doc.line(margin, y, pw - margin, y); y += 6;
+    }
+    function row(label, value, bold) {
+      ensure(7);
+      doc.setFont("helvetica", bold ? "bold" : "normal"); doc.setFontSize(bold ? 10.5 : 9.5); doc.setTextColor(69, 82, 107);
+      doc.text(label, margin + 2, y);
+      doc.setTextColor(31, 42, 60);
+      doc.text(typeof value === "number" ? currency(value) : String(value), pw - margin - 2, y, { align: "right" });
+      y += bold ? 6.5 : 5.5;
+    }
+
+    title("Ingresos");
+    row("Facturado en el mes (notas emitidas)", c.facturado);
+    row("Cobrado en el mes (abonos recibidos)", c.cobrado, true);
+    row("Por cobrar total de clientes (a la fecha)", c.porCobrarTotal);
+    y += 3;
+    title("Salidas de dinero");
+    row("Gastos de la empresa", r2(c.totalSalidas - c.totalEquipo));
+    row("     con factura", c.conFactura);
+    row("     sin factura", c.sinFactura);
+    row("     pagos al SAT (IVA / ISR)", c.pagosSat);
+    row("Pagos al equipo", c.totalEquipo);
+    row("Total de salidas", c.totalSalidas, true);
+    Object.keys(c.porMetodo).forEach(function(k){ row("     por " + k.toLowerCase(), r2(c.porMetodo[k])); });
+    y += 3;
+    title("Impuestos (estimado)");
+    row("IVA cobrado a clientes", c.iva.cobrado);
+    row("IVA acreditable (gastos con factura)", c.iva.acreditable);
+    row("IVA neto del mes", c.iva.neto, true);
+    row("IVA pagado al SAT en el mes", c.iva.pagadoSat);
+    row("ISR pagado al SAT en el mes", c.iva.isrPagado);
+    y += 3;
+    title("Resultado de efectivo del mes");
+    row("Cobrado menos salidas", c.resultado, true);
+    if (c.sinConfirmar) {
+      doc.setFont("helvetica", "italic"); doc.setFontSize(8.5); doc.setTextColor(156, 59, 46);
+      doc.text(c.sinConfirmar + " movimiento(s) sin confirmar con clave no están incluidos.", margin + 2, y); y += 6;
+    }
+
+    function table(headers, widths, aligns, rows) {
+      function header() {
+        doc.setFillColor(236, 239, 225); doc.rect(margin, y - 4, pw - margin * 2, 7, "F");
+        doc.setFont("helvetica", "bold"); doc.setFontSize(8); doc.setTextColor(31, 42, 60);
+        var x = margin + 1;
+        headers.forEach(function(h, i){ doc.text(h, aligns[i] === "r" ? x + widths[i] - 2 : x, y, { align: aligns[i] === "r" ? "right" : "left" }); x += widths[i]; });
+        y += 6;
+        doc.setFont("helvetica", "normal"); doc.setFontSize(8.5); doc.setTextColor(31, 42, 60);
+      }
+      ensure(12);
+      header();
+      rows.forEach(function(r){
+        var cell0 = doc.splitTextToSize(String(r[1]), widths[1] - 2);
+        if (y + cell0.length * 4 + 3 > ph - 20) { doc.addPage(); y = 22; header(); }
+        var xx = margin + 1;
+        r.forEach(function(v, i){
+          var txt = i === 1 ? cell0 : String(v);
+          doc.text(txt, aligns[i] === "r" ? xx + widths[i] - 2 : xx, y, { align: aligns[i] === "r" ? "right" : "left" });
+          xx += widths[i];
+        });
+        y += Math.max(cell0.length, 1) * 4 + 1.5;
+        doc.setDrawColor(224, 228, 214); doc.line(margin, y - 2.5, pw - margin, y - 2.5);
+      });
+      y += 4;
+    }
+
+    if (c.abonos.length) {
+      title("Detalle de ingresos cobrados");
+      table(["Fecha", "Cliente / nota", "Método", "Monto"], [22, 100, 28, 28], ["l", "l", "l", "r"],
+        c.abonos.map(function(a){ return [formatDateMX(a.fecha), (a.cliente || "—") + " (" + (a.folio || "") + ")", a.metodo || "—", currency(a.monto)]; }));
+    }
+    if (c.salidas.length) {
+      title("Detalle de salidas");
+      table(["Fecha", "Concepto", "Método", "Factura / IVA", "Monto"], [20, 78, 24, 24, 24], ["l", "l", "l", "l", "r"],
+        c.salidas.map(function(e){
+          var eq = e.tipo === "pago_equipo";
+          var concepto = eq ? (memberName(e.beneficiario) + " — " + (e.concepto || "Pago")) : ((e.category || "") + (e.description ? " — " + e.description : ""));
+          return [formatDateMX(e.date), concepto, e.metodo || "—", (eq || esPagoSat(e)) ? "—" : (e.conFactura ? "Sí " + (e.iva ? currency(e.iva) : "") : "No"), currency(e.amount)];
+        }));
+    }
+    doc.save("corte-" + mes + ".pdf");
   }
 
   function generateNotaPDF(n) {
@@ -2395,12 +3073,22 @@
           '<button type="button" class="btn-secondary" id="save-support-whatsapp-btn">Guardar número</button>' +
         '</div>' +
       '</div>';
+    var lastBackup = state.settings && state.settings.lastBackupAt;
+    var backupCard =
+      '<div class="card">' +
+        '<h3 class="card-title">Respaldo de datos</h3>' +
+        '<p class="hint">Descarga una copia de todo lo que está guardado (gastos, notas, abonos, tareas, tickets, aportaciones, recurrentes y cierres de mes). Guárdala en un lugar seguro, por ejemplo en tu computadora y en la nube. ' +
+          (lastBackup ? 'Último respaldo: <strong>' + formatDateTimeMX(lastBackup) + '</strong>.' : '<strong>Todavía no has descargado ningún respaldo.</strong>') + '</p>' +
+        '<button type="button" class="btn-secondary" id="backup-btn">Descargar respaldo completo (JSON)</button>' +
+        '<p class="hint" style="margin:8px 0 0;">Por seguridad el respaldo no incluye contraseñas ni claves de 4 dígitos.</p>' +
+      '</div>';
     return (
       '<h2 class="panel-title">Equipo</h2>' +
       accessCard +
       reportAccessCard +
       notifyCard +
       whatsappCard +
+      backupCard +
       '<div class="card">' +
         '<p class="hint">Estos nombres se usan para asignar tareas y para registrar quién paga cada gasto. Los datos se comparten entre quienes visiten esta página. Cada integrante puede poner su propia clave de 4 dígitos — se usa para confirmar gastos y aportaciones, como firma de autorización. Para cambiar una clave ya existente hace falta escribir la clave actual.</p>' +
         '<div id="member-rows">' + rows + '</div>' +
@@ -2408,7 +3096,46 @@
       '</div>'
     );
   }
+  async function descargarRespaldo() {
+    var conFotos = confirm("¿Incluir también las fotos de recibos y reportes?\n\nAceptar = con fotos (pesa más y tarda más)\nCancelar = solo los datos");
+    var btn = document.getElementById("backup-btn");
+    if (btn) { btn.disabled = true; btn.textContent = "Preparando respaldo…"; }
+    try {
+      var data = {
+        version: 1, generado: new Date().toISOString(), empresa: (state.settings && state.settings.companyName) || "",
+        team: state.team.map(function(m){ var c = Object.assign({}, m); delete c.pinHash; delete c.passwordHash; return c; }),
+        expenses: state.expenses, tasks: state.tasks, contributions: state.contributions, settings: state.settings, budgets: state.budgets,
+        auditlog: state.auditLog, tickets: state.tickets, notas: state.notas, recurrentes: state.recurrentes, cierres: state.cierres
+      };
+      if (conFotos) {
+        var keys = state.expenses.filter(function(e){ return e.hasReceipt; }).map(function(e){ return "receipt:" + e.id; })
+          .concat(state.tickets.filter(function(t){ return t.hasPhoto; }).map(function(t){ return "ticket-photo:" + t.id; }));
+        data.photos = {};
+        for (var i = 0; i < keys.length; i += 5) {
+          var batch = keys.slice(i, i + 5);
+          var vals = await Promise.all(batch.map(function(k){ return loadKey(k, null); }));
+          batch.forEach(function(k, j){ if (vals[j]) data.photos[k] = vals[j]; });
+        }
+      }
+      var blob = new Blob([JSON.stringify(data)], { type: "application/json" });
+      var url = URL.createObjectURL(blob);
+      var a = document.createElement("a");
+      a.href = url; a.download = "respaldo-bitacora-" + todayISO() + ".json";
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      setTimeout(function(){ URL.revokeObjectURL(url); }, 2000);
+      await saveSettings(Object.assign({}, state.settings, { lastBackupAt: Date.now() }));
+      logActivity("Respaldo completo descargado" + (conFotos ? " (con fotos)" : ""));
+      flash("Respaldo descargado.");
+      renderTabContent();
+    } catch (e) {
+      flash("No se pudo generar el respaldo.", true);
+      if (btn) { btn.disabled = false; btn.textContent = "Descargar respaldo completo (JSON)"; }
+    }
+  }
+
   function bindEquipoEvents() {
+    var backupBtn = document.getElementById("backup-btn");
+    if (backupBtn) backupBtn.addEventListener("click", descargarRespaldo);
     wirePasswordHint("access-new-password", "access-pw-hint");
     (async function(){
       var hint = document.getElementById("notify-status-hint");
