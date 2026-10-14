@@ -186,6 +186,7 @@
     gastosTipoFilter: "todos",
     gastoEditId: null,
     gastosFacturaFilter: "todas",
+    gastosNatFilter: "todas",
     recurrentes: [],
     cierres: [],
     repartos: {},
@@ -787,6 +788,11 @@
   }
   function r2(x) { return Math.round((Number(x) || 0) * 100) / 100; }
   function esPagoSat(e) { return e.category === CAT_IVA_SAT || e.category === CAT_ISR_SAT; }
+  var CATS_FIJAS = ["Renta", "Servicios y suscripciones", "Seguros", "Contadora / contabilidad", "Comisiones bancarias", "Nómina"];
+  function esGastoOperativo(e) { return e.tipo !== "pago_equipo" && !esPagoSat(e); }
+  function naturalezaDe(e) {
+    return e.naturaleza || (e.recurrenteId ? "fijo" : (CATS_FIJAS.indexOf(e.category) !== -1 ? "fijo" : "variable"));
+  }
   function inMonth(dateStr, mes) { return !mes || (dateStr || "").slice(0, 7) === mes; }
   function ivaFromAmount(amount, rate) {
     var t = Number(rate) || 0;
@@ -902,6 +908,7 @@
     if (e.metodo) bits.push(escapeHtml(e.metodo));
     if (e.tipo !== "pago_equipo") {
       if (!esPagoSat(e)) bits.push((e.conFactura ? "Con factura" : "Sin factura") + (Number(e.iva) > 0 ? " · IVA " + currency(e.iva) + (e.conFactura ? "" : " (no acreditable)") : ""));
+      if (esGastoOperativo(e)) bits.push(naturalezaDe(e) === "fijo" ? "Fijo" : "Variable");
       if (e.cliente) bits.push("Cliente: " + escapeHtml(e.cliente));
       if (e.deBolsillo) bits.push("De bolsillo de " + escapeHtml(memberName(e.paidBy)));
     } else if (Number(e.descuentoAnticipo) > 0) {
@@ -962,7 +969,7 @@
       description: src.description || "", cliente: src.cliente || ""
     };
     if (src.tipo === "pago_equipo") { t.beneficiario = src.beneficiario; t.concepto = src.concepto; }
-    else { t.conFactura = !!src.conFactura; t.ivaRate = Number(src.iva) > 0 ? src.ivaRate : 0; t.deBolsillo = !!src.deBolsillo; }
+    else { t.conFactura = !!src.conFactura; t.ivaRate = Number(src.iva) > 0 ? src.ivaRate : 0; t.deBolsillo = !!src.deBolsillo; t.naturaleza = src.naturaleza || "fijo"; }
     if (!(await saveRecurrentes(state.recurrentes.concat([t])))) return;
     if ((src.date || "").slice(0, 7) === todayISO().slice(0, 7) && !src.recurrenteId) {
       state.expenses = state.expenses.map(function(x){ return x.id === src.id ? Object.assign({}, x, { recurrenteId: t.id }) : x; });
@@ -984,6 +991,7 @@
       if (t.conFactura) exp.conFactura = true;
       if (Number(t.ivaRate) > 0) { exp.ivaRate = t.ivaRate; exp.iva = ivaFromAmount(t.amount, t.ivaRate); }
       if (t.deBolsillo) exp.deBolsillo = true;
+      exp.naturaleza = t.naturaleza || "fijo";
     }
     await addExpense(exp, null);
   }
@@ -1009,12 +1017,14 @@
     var monthFilter = state.gastosMonthFilter;
     var tipoFilter = state.gastosTipoFilter || "todos";
     var facturaFilter = state.gastosFacturaFilter || "todas";
+    var natFilter = state.gastosNatFilter || "todas";
     var filtered = state.expenses.filter(function(e){
       if (monthFilter && !(e.date && e.date.slice(0,7) === monthFilter)) return false;
       if (tipoFilter === "pago_equipo" && e.tipo !== "pago_equipo") return false;
       if (tipoFilter === "gasto" && e.tipo === "pago_equipo") return false;
       if (facturaFilter === "con" && !(e.tipo !== "pago_equipo" && e.conFactura)) return false;
       if (facturaFilter === "sin" && !(e.tipo !== "pago_equipo" && !esPagoSat(e) && !e.conFactura)) return false;
+      if (natFilter !== "todas" && !(esGastoOperativo(e) && naturalezaDe(e) === natFilter)) return false;
       return true;
     });
     var confirmedFiltered = filtered.filter(isFullyConfirmed);
@@ -1026,12 +1036,15 @@
     var sinFacturaList = gastosOnly.filter(function(e){ return !e.conFactura; });
     var ivaAcred = conFacturaList.reduce(function(s, e){ return s + Number(e.iva || 0); }, 0);
     var ivaSinFactura = sinFacturaList.reduce(function(s, e){ return s + Number(e.iva || 0); }, 0);
+    var fijosList = gastosOnly.filter(function(e){ return naturalezaDe(e) === "fijo"; });
+    var variablesList = gastosOnly.filter(function(e){ return naturalezaDe(e) === "variable"; });
     var porMetodo = {};
     confirmedFiltered.forEach(function(e){ var k = e.metodo || "Sin dato"; porMetodo[k] = (porMetodo[k] || 0) + Number(e.amount || 0); });
     var metodoLine = Object.keys(porMetodo).map(function(k){ return escapeHtml(k) + ' <strong class="mono">' + currency(porMetodo[k]) + '</strong>'; }).join(' &nbsp;·&nbsp; ');
     var resumenLine = confirmedFiltered.length === 0 ? "" :
       '<p class="hint" style="margin:0 0 10px;">' +
         (tipoFilter !== "pago_equipo" ? 'Con factura <strong class="mono">' + currency(sumAmounts(conFacturaList)) + '</strong> (IVA acreditable <strong class="mono">' + currency(ivaAcred) + '</strong>) &nbsp;·&nbsp; Sin factura <strong class="mono">' + currency(sumAmounts(sinFacturaList)) + '</strong>' + (ivaSinFactura > 0 ? ' (IVA pagado sin factura, no acreditable: <strong class="mono">' + currency(ivaSinFactura) + '</strong>)' : '') + '<br>' : '') +
+        (tipoFilter !== "pago_equipo" ? 'Fijos <strong class="mono">' + currency(sumAmounts(fijosList)) + '</strong> &nbsp;·&nbsp; Variables <strong class="mono">' + currency(sumAmounts(variablesList)) + '</strong><br>' : '') +
         'Por método: ' + metodoLine +
       '</p>';
     var categoryOptions = CATEGORIES.filter(function(c){ return c !== CAT_EQUIPO; }).map(function(c){ return '<option value="' + escapeHtml(c) + '">' + escapeHtml(c) + '</option>'; }).join("");
@@ -1071,6 +1084,7 @@
         '<label data-only-equipo style="display:none;">Concepto<select name="concepto">' + conceptoOptions + '</select></label>' +
         '<label>Pagó (quién hizo el pago)<select name="paidBy">' + teamOptions + '</select></label>' +
         '<label>Método de pago<select name="metodo">' + metodoOptions + '</select></label>' +
+        '<label data-only-gasto>Naturaleza del gasto<select name="naturaleza"><option value="variable">Variable (cambia cada mes)</option><option value="fijo">Fijo (se repite igual cada mes)</option></select></label>' +
         '<label>Fecha<input type="date" name="date" value="' + todayISO() + '" /></label>' +
         '<label data-only-gasto style="flex-direction:row; align-items:center; gap:8px; font-size:13px;"><input type="checkbox" name="conIva" style="width:auto;" /> Me cobraron IVA (el monto ya lo incluye)</label>' +
         '<label data-only-iva style="display:none;">Tasa de IVA incluida en el monto<select name="ivaTasa"><option value="16">16 %</option><option value="8">8 % (frontera)</option></select></label>' +
@@ -1095,6 +1109,11 @@
           '<option value="todas"' + (facturaFilter === "todas" ? " selected" : "") + '>Con y sin factura</option>' +
           '<option value="con"' + (facturaFilter === "con" ? " selected" : "") + '>Solo con factura</option>' +
           '<option value="sin"' + (facturaFilter === "sin" ? " selected" : "") + '>Solo sin factura</option>' +
+        '</select>' +
+        '<select id="gastos-nat-filter" style="width:auto;">' +
+          '<option value="todas"' + (natFilter === "todas" ? " selected" : "") + '>Fijos y variables</option>' +
+          '<option value="fijo"' + (natFilter === "fijo" ? " selected" : "") + '>Solo fijos</option>' +
+          '<option value="variable"' + (natFilter === "variable" ? " selected" : "") + '>Solo variables</option>' +
         '</select>' +
         '<span class="total-chip">Total confirmado: ' + currency(total) + '</span>' +
         (pendingCount > 0 ? '<span class="hint" style="margin:0;">' + pendingCount + ' pendiente(s) de confirmar</span>' : '') +
@@ -1135,6 +1154,8 @@
     if (tieneIva) f.elements["ivaTasa"].value = String(src.ivaRate != null ? src.ivaRate : 16);
     f.elements["conFactura"].checked = !esEq && !!src.conFactura;
     f.elements["deBolsillo"].checked = !esEq && !!src.deBolsillo;
+    f.elements["naturaleza"].value = esEq ? "variable" : naturalezaDe(src);
+    f.elements["naturaleza"].dataset.touched = forEdit ? "1" : "";
     f.elements["cliente"].value = (!esEq && src.cliente) || "";
     f.elements["descuentoAnticipo"].value = (forEdit && esEq && src.descuentoAnticipo) ? src.descuentoAnticipo : "";
     if (esEq) {
@@ -1164,7 +1185,7 @@
       return;
     }
     var next = Object.assign({}, old);
-    ["tipo", "beneficiario", "concepto", "descuentoAnticipo", "conFactura", "ivaRate", "iva", "deBolsillo", "cliente"].forEach(function(k){ delete next[k]; });
+    ["tipo", "beneficiario", "concepto", "descuentoAnticipo", "conFactura", "ivaRate", "iva", "deBolsillo", "cliente", "naturaleza"].forEach(function(k){ delete next[k]; });
     Object.assign(next, exp, { updatedAt: Date.now() });
     var changed = ["amount", "date", "category", "paidBy", "tipo", "beneficiario", "concepto", "descuentoAnticipo", "deBolsillo"].some(function(k){
       return String(old[k] == null ? "" : old[k]) !== String(next[k] == null ? "" : next[k]);
@@ -1207,6 +1228,11 @@
     if (budgetsDetails) budgetsDetails.addEventListener("toggle", function(){ state.presupuestosAbierto = budgetsDetails.open; });
     expenseForm.elements["tipo"].addEventListener("change", applyGastoTipo);
     expenseForm.elements["conIva"].addEventListener("change", applyGastoTipo);
+    expenseForm.elements["category"].addEventListener("change", function(){
+      var nat = expenseForm.elements["naturaleza"];
+      if (!nat.dataset.touched) nat.value = CATS_FIJAS.indexOf(expenseForm.elements["category"].value) !== -1 ? "fijo" : "variable";
+    });
+    expenseForm.elements["naturaleza"].addEventListener("change", function(){ expenseForm.elements["naturaleza"].dataset.touched = "1"; });
     expenseForm.elements["beneficiario"].addEventListener("change", applyGastoTipo);
     applyGastoTipo();
     expenseForm.addEventListener("submit", async function(e){
@@ -1255,6 +1281,7 @@
         }
         if (fd.get("conFactura")) exp.conFactura = true;
         if (fd.get("deBolsillo")) exp.deBolsillo = true;
+        exp.naturaleza = fd.get("naturaleza") === "fijo" ? "fijo" : "variable";
         var cli = (fd.get("cliente") || "").trim();
         if (cli) exp.cliente = cli;
       }
@@ -1271,6 +1298,10 @@
     });
     document.getElementById("gastos-factura-filter").addEventListener("change", function(e){
       state.gastosFacturaFilter = e.target.value;
+      renderTabContent();
+    });
+    document.getElementById("gastos-nat-filter").addEventListener("change", function(e){
+      state.gastosNatFilter = e.target.value;
       renderTabContent();
     });
     document.querySelectorAll("[data-make-recurrente]").forEach(function(btn){
@@ -1339,14 +1370,15 @@
         if (tipoFilter === "gasto" && e.tipo === "pago_equipo") return false;
         if (facturaFilter === "con" && !(e.tipo !== "pago_equipo" && e.conFactura)) return false;
         if (facturaFilter === "sin" && !(e.tipo !== "pago_equipo" && !e.conFactura)) return false;
+        if ((state.gastosNatFilter || "todas") !== "todas" && !(esGastoOperativo(e) && naturalezaDe(e) === state.gastosNatFilter)) return false;
         return true;
       }).slice().sort(function(a,b){ return b.date.localeCompare(a.date); });
-      var out = [["Fecha","Tipo","Categoría","Beneficiario","Concepto","Descripción","Pagó","Método","Con factura","IVA","Cliente / proyecto","De bolsillo","Descuento de anticipo","Monto","Estado"]];
+      var out = [["Fecha","Tipo","Categoría","Beneficiario","Concepto","Descripción","Pagó","Método","Con factura","IVA","Cliente / proyecto","De bolsillo","Descuento de anticipo","Naturaleza","Monto","Estado"]];
       rows.forEach(function(e){
         var eq = e.tipo === "pago_equipo";
         out.push([formatDateMX(e.date), eq ? "Pago al equipo" : "Gasto", e.category, eq ? memberName(e.beneficiario) : "", eq ? (e.concepto || "") : "",
           e.description || "", memberName(e.paidBy), e.metodo || "", (eq || esPagoSat(e)) ? "" : (e.conFactura ? "Sí" : "No"), Number(e.iva) > 0 ? e.iva : "",
-          e.cliente || "", e.deBolsillo ? "Sí" : "", e.descuentoAnticipo || "",
+          e.cliente || "", e.deBolsillo ? "Sí" : "", e.descuentoAnticipo || "", esGastoOperativo(e) ? (naturalezaDe(e) === "fijo" ? "Fijo" : "Variable") : "",
           e.amount, isFullyConfirmed(e) ? "Confirmada" : "Pendiente"]);
       });
       downloadCSV("gastos-" + (monthFilter || "todos") + (tipoFilter !== "todos" ? "-" + tipoFilter : "") + ".csv", out);
@@ -2693,6 +2725,7 @@
         '</div>' +
         '<p class="hint" style="margin:10px 0 0;">Capital disponible = aportaciones confirmadas + abonos de clientes ya cobrados − gastos confirmados. Si da negativo, es lo que el negocio todavía le debe a los socios.</p>' +
       '</div>' +
+      salidasTipoCardHTML(monthFilter) +
       ivaCardHTML(monthFilter) +
       cuentasSociosCardHTML() +
       '<div class="card">' +
@@ -2922,7 +2955,7 @@
         '<p class="hint" style="margin:-6px 0 8px;">Palomea los que sí vas a pagar con este ingreso. Los recurrentes se enlazan con Gastos: al registrarlos allá (o con "Registrar pago" aquí) quedan como pagados y toman el monto real.</p>' +
         repartoLinesHTML("fijos", r.fijosRes) +
         '<div style="display:flex; gap:10px; flex-wrap:wrap;"><button type="button" class="btn-secondary" id="rp-add-fijos">+ Agregar gasto fijo</button>' +
-          '<button type="button" class="btn-secondary" id="rp-import-rec">Traer mis recurrentes</button></div>' +
+          '<button type="button" class="btn-secondary" id="rp-import-rec">Traer recurrentes y fijos del mes</button></div>' +
         line("Total gastos fijos", money("rp-fijos-total", r.fijos), true) +
         subline("rp-fijos-sub", r.fijos, r.fijosPagado) +
       '</div>' +
@@ -2931,7 +2964,7 @@
         '<p class="hint" style="margin:-6px 0 8px;">Lo que cambia cada mes. Los que traes de Gastos se mantienen ligados: si cambias el monto allá, se actualiza aquí.</p>' +
         repartoLinesHTML("variables", r.variablesRes) +
         '<div style="display:flex; gap:10px; flex-wrap:wrap;"><button type="button" class="btn-secondary" id="rp-add-variables">+ Agregar gasto variable</button>' +
-          '<button type="button" class="btn-secondary" id="rp-import-var">Traer gastos del mes</button></div>' +
+          '<button type="button" class="btn-secondary" id="rp-import-var">Traer gastos variables del mes</button></div>' +
         line("Total gastos variables", money("rp-var-total", r.variables), true) +
         subline("rp-var-sub", r.variables, r.variablesPagado) +
       '</div>' +
@@ -3070,25 +3103,30 @@
     document.getElementById("rp-import-rec").addEventListener("click", async function(){
       syncRepartoFromDOM();
       var plan = getRepartoPlan(mes);
-      var have = plan.fijos.map(function(l){ return l.fuente; });
+      var have = plan.fijos.concat(plan.variables).map(function(l){ return l.fuente; });
       var added = 0;
       state.recurrentes.filter(function(t){ return t.activo !== false && t.tipo !== "pago_equipo" && have.indexOf("rec:" + t.id) === -1; }).forEach(function(t){
         plan.fijos.push({ id: uid(), nombre: t.nombre, monto: Number(t.amount) || 0, on: true, fuente: "rec:" + t.id }); added++;
       });
-      flash(added ? added + " recurrente(s) agregado(s)." : "No hay recurrentes nuevos que traer.");
+      state.expenses.filter(function(e){
+        return inMonth(e.date, mes) && esGastoOperativo(e) && !e.recurrenteId && naturalezaDe(e) === "fijo" && have.indexOf("gasto:" + e.id) === -1;
+      }).forEach(function(e){
+        plan.fijos.push({ id: uid(), nombre: e.description || e.category, monto: Number(e.amount) || 0, on: true, fuente: "gasto:" + e.id }); added++;
+      });
+      flash(added ? added + " concepto(s) agregado(s)." : "No hay recurrentes ni gastos fijos nuevos que traer.");
       await persistReparto(true); renderTabContent();
     });
     document.getElementById("rp-import-var").addEventListener("click", async function(){
       syncRepartoFromDOM();
       var plan = getRepartoPlan(mes);
-      var have = plan.variables.map(function(l){ return l.fuente; });
+      var have = plan.fijos.concat(plan.variables).map(function(l){ return l.fuente; });
       var added = 0;
       state.expenses.filter(function(e){
-        return inMonth(e.date, mes) && e.tipo !== "pago_equipo" && !esPagoSat(e) && !e.recurrenteId && have.indexOf("gasto:" + e.id) === -1;
+        return inMonth(e.date, mes) && esGastoOperativo(e) && !e.recurrenteId && naturalezaDe(e) === "variable" && have.indexOf("gasto:" + e.id) === -1;
       }).forEach(function(e){
         plan.variables.push({ id: uid(), nombre: e.description || e.category, monto: Number(e.amount) || 0, on: true, fuente: "gasto:" + e.id }); added++;
       });
-      flash(added ? added + " gasto(s) del mes agregado(s)." : "No hay gastos nuevos de este mes que traer.");
+      flash(added ? added + " gasto(s) variable(s) agregado(s)." : "No hay gastos variables nuevos de este mes que traer.");
       await persistReparto(true); renderTabContent();
     });
     document.querySelectorAll("[data-rp-registrar]").forEach(function(btn){
@@ -3132,6 +3170,27 @@
   }
 
   // ---------- Balance: tarjetas extra ----------
+  function salidasTipoCardHTML(mes) {
+    var conf = state.expenses.filter(isFullyConfirmed).filter(function(e){ return inMonth(e.date, mes); });
+    var oper = conf.filter(esGastoOperativo);
+    var rows = [
+      { label: "Gastos fijos", val: sumAmounts(oper.filter(function(e){ return naturalezaDe(e) === "fijo"; })) },
+      { label: "Gastos variables", val: sumAmounts(oper.filter(function(e){ return naturalezaDe(e) === "variable"; })) },
+      { label: "Pagos al equipo", val: sumAmounts(conf.filter(function(e){ return e.tipo === "pago_equipo"; })) },
+      { label: "Pagos al SAT (IVA / ISR)", val: sumAmounts(conf.filter(esPagoSat)) }
+    ];
+    var total = sumAmounts(conf);
+    var body = total === 0 ? '<p class="empty">Sin salidas confirmadas en este periodo.</p>' :
+      rows.map(function(r){
+        return '<div class="cat-bar-row"><span class="cat-bar-label" style="width:170px;">' + r.label + '</span>' +
+          '<div class="cat-bar-track"><div class="cat-bar-fill" style="width:' + (total > 0 ? (r.val / total) * 100 : 0) + '%"></div></div>' +
+          '<span class="cat-bar-value mono">' + currency(r.val) + '</span></div>';
+      }).join("") +
+      '<div style="display:flex; justify-content:space-between; border-top:1px solid var(--paper-line); margin-top:8px; padding-top:8px; font-weight:700; font-size:13px;"><span>Total de salidas</span><span class="mono">' + currency(total) + '</span></div>';
+    return '<div class="card"><h3 class="card-title">Salidas por tipo' + (mes ? " — " + mesLabel(mes) : " — histórico") + '</h3>' + body +
+      '<p class="hint" style="margin:10px 0 0;">Fijo o variable se elige en cada gasto (Gastos → Naturaleza). Los gastos viejos se clasifican solos: los recurrentes y categorías como renta o suscripciones cuentan como fijos; puedes corregirlos con Editar.</p></div>';
+  }
+
   function ivaCardHTML(mes) {
     var s = ivaStats(mes);
     var pend = s.pendienteHist;
@@ -3235,6 +3294,8 @@
       facturado: r2(facturado), cobrado: r2(cobrado), totalSalidas: r2(totalSalidas), totalEquipo: r2(sumAmounts(equipo)),
       conFactura: r2(sumAmounts(gastosFact.filter(function(e){ return e.conFactura; }))), sinFactura: r2(sumAmounts(gastosFact.filter(function(e){ return !e.conFactura; }))),
       pagosSat: r2(sumAmounts(gastos.filter(esPagoSat))),
+      fijos: r2(sumAmounts(gastos.filter(function(e){ return esGastoOperativo(e) && naturalezaDe(e) === "fijo"; }))),
+      variables: r2(sumAmounts(gastos.filter(function(e){ return esGastoOperativo(e) && naturalezaDe(e) === "variable"; }))),
       porMetodo: porMetodo, iva: ivaStats(mes), resultado: r2(cobrado - totalSalidas),
       porCobrarTotal: r2((state.notas || []).reduce(function(s, n){ return s + notaSaldo(n); }, 0)),
       sinConfirmar: state.expenses.filter(function(e){ return inMonth(e.date, mes) && !isFullyConfirmed(e); }).length
@@ -3315,9 +3376,11 @@
     y += 3;
     title("Salidas de dinero");
     row("Gastos de la empresa", r2(c.totalSalidas - c.totalEquipo));
-    row("     con factura", c.conFactura);
-    row("     sin factura", c.sinFactura);
+    row("     fijos", c.fijos);
+    row("     variables", c.variables);
     row("     pagos al SAT (IVA / ISR)", c.pagosSat);
+    row("     con factura (fijos y variables)", c.conFactura);
+    row("     sin factura (fijos y variables)", c.sinFactura);
     row("Pagos al equipo", c.totalEquipo);
     row("Total de salidas", c.totalSalidas, true);
     Object.keys(c.porMetodo).forEach(function(k){ row("     por " + k.toLowerCase(), r2(c.porMetodo[k])); });
