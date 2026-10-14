@@ -973,10 +973,10 @@
     renderTabContent();
   }
 
-  async function registrarRecurrente(id) {
+  async function registrarRecurrente(id, fecha) {
     var t = state.recurrentes.find(function(x){ return x.id === id; });
     if (!t) return;
-    var exp = { amount: t.amount, category: t.category, paidBy: t.paidBy, metodo: t.metodo || "", date: todayISO(),
+    var exp = { amount: t.amount, category: t.category, paidBy: t.paidBy, metodo: t.metodo || "", date: fecha || todayISO(),
       description: t.description || t.nombre, recurrenteId: t.id };
     if (t.cliente) exp.cliente = t.cliente;
     if (t.tipo === "pago_equipo") { exp.tipo = "pago_equipo"; exp.beneficiario = t.beneficiario; exp.concepto = t.concepto; }
@@ -2737,25 +2737,75 @@
 
   // ---------- Reparto del mes ----------
   var REPARTO_DEFAULT = [
-    { nombre: "Reinversión en la empresa", pct: 40 },
-    { nombre: "Tu sueldo como trabajador", pct: 30 },
-    { nombre: "Fondo de emergencia", pct: 20 },
-    { nombre: "Ganancia adicional del propietario", pct: 10 }
+    { nombre: "Reinversión en la empresa", pct: 40, modo: "apartado" },
+    { nombre: "Tu sueldo como trabajador", pct: 30, modo: "pago:Sueldo" },
+    { nombre: "Fondo de emergencia", pct: 20, modo: "apartado" },
+    { nombre: "Ganancia adicional del propietario", pct: 10, modo: "pago:Retiro de utilidades" }
   ];
   function repartoPcts() {
-    var p = state.settings && state.settings.repartoPct;
-    return (p && p.length) ? p : REPARTO_DEFAULT;
+    var saved = state.settings && state.settings.repartoPct;
+    var base = (saved && saved.length) ? saved : REPARTO_DEFAULT;
+    var fallbackPara = (state.team.find(function(m){ return m.id === state.authId; }) || state.team[0] || {}).id || "";
+    return base.map(function(p, i){
+      var d = REPARTO_DEFAULT[i] || {};
+      return { nombre: p.nombre, pct: Number(p.pct) || 0, modo: p.modo || d.modo || "apartado", para: p.para || fallbackPara };
+    });
+  }
+  function fechaEnMes(mes) {
+    if (mes === todayISO().slice(0, 7)) return todayISO();
+    var y = Number(mes.slice(0, 4)), m = Number(mes.slice(5, 7));
+    return mes + "-" + String(new Date(Date.UTC(y, m, 0)).getUTCDate()).padStart(2, "0");
   }
   function getRepartoPlan(mes) {
     if (!state.repartos[mes]) {
       state.repartos[mes] = {
-        ingresoManual: "", satIva: "", satIsrPct: 0, variables: [],
+        ingresoManual: "", satIva: "", satIsrPct: 0, variables: [], apartado: {},
         fijos: state.recurrentes.filter(function(t){ return t.activo !== false && t.tipo !== "pago_equipo"; })
           .map(function(t){ return { id: uid(), nombre: t.nombre, monto: Number(t.amount) || 0, on: true, fuente: "rec:" + t.id }; })
       };
     }
-    return state.repartos[mes];
+    var p = state.repartos[mes];
+    if (!p.apartado) p.apartado = {};
+    return p;
   }
+
+  // Cada línea queda ligada a Gastos: toma el monto real y dice si ya se pagó.
+  function resolveLine(l, mes) {
+    var f = l.fuente || "manual";
+    var exp = null, tpl = null;
+    if (f.indexOf("gasto:") === 0) exp = state.expenses.find(function(e){ return e.id === f.slice(6); }) || null;
+    else if (f.indexOf("rec:") === 0) {
+      var rid = f.slice(4);
+      tpl = state.recurrentes.find(function(t){ return t.id === rid; }) || null;
+      exp = state.expenses.find(function(e){ return e.recurrenteId === rid && inMonth(e.date, mes); }) || null;
+    }
+    var base = { line: l, nombre: l.nombre, monto: Number(l.monto) || 0 };
+    if (exp) return Object.assign(base, { linked: true, expense: exp, monto: Number(exp.amount) || 0, estado: isFullyConfirmed(exp) ? "pagado" : "sinconfirmar" });
+    if (f.indexOf("gasto:") === 0) return Object.assign(base, { estado: "huerfano" });
+    if (tpl) return Object.assign(base, { rec: tpl, estado: "pendiente" });
+    return Object.assign(base, { estado: "manual" });
+  }
+
+  function bucketEstado(p, i, monto, plan, mes) {
+    if (String(p.modo).indexOf("pago:") === 0) {
+      var concepto = p.modo.slice(5);
+      var mine = state.expenses.filter(function(e){ return e.tipo === "pago_equipo" && e.concepto === concepto && e.beneficiario === p.para && inMonth(e.date, mes); });
+      var pagado = sumAmounts(mine.filter(isFullyConfirmed));
+      var sinConf = sumAmounts(mine.filter(function(e){ return !isFullyConfirmed(e); }));
+      return { tipo: "pago", concepto: concepto, pagado: r2(pagado), sinConf: r2(sinConf), falta: Math.max(0, r2(monto - pagado - sinConf)) };
+    }
+    var ap = Number((plan.apartado || {})[i]) || 0;
+    return { tipo: "apartado", apartado: r2(ap), falta: Math.max(0, r2(monto - ap)) };
+  }
+  function estadoTexto(est) {
+    if (est.tipo === "pago") {
+      if (est.pagado <= 0 && est.sinConf <= 0) return "Sin pagar";
+      return "Pagado " + currency(est.pagado) + (est.sinConf > 0 ? " (+" + currency(est.sinConf) + " sin confirmar)" : "") + (est.falta > 0 ? " · falta " + currency(est.falta) : " ✓");
+    }
+    if (est.apartado <= 0) return "Sin apartar";
+    return "Apartado " + currency(est.apartado) + (est.falta > 0 ? " · falta " + currency(est.falta) : " ✓");
+  }
+
   function repartoCalc(mes, plan, pcts) {
     var cobrado = corteMes(mes).cobrado;
     var iva = ivaStats(mes);
@@ -2765,27 +2815,47 @@
     var satIvaAuto = Math.max(0, iva.neto);
     var satIva = (plan.satIva !== "" && plan.satIva != null) ? r2(plan.satIva) : satIvaAuto;
     var satIsr = r2(neto * (Number(plan.satIsrPct) || 0) / 100);
-    var sumOn = function(list){ return r2(list.filter(function(l){ return l.on; }).reduce(function(s, l){ return s + Number(l.monto || 0); }, 0)); };
-    var fijos = sumOn(plan.fijos), variables = sumOn(plan.variables);
+    var fijosRes = plan.fijos.map(function(l){ return resolveLine(l, mes); });
+    var variablesRes = plan.variables.map(function(l){ return resolveLine(l, mes); });
+    var sumOn = function(res){ return r2(res.filter(function(x){ return x.line.on; }).reduce(function(s, x){ return s + x.monto; }, 0)); };
+    var sumPagado = function(res){ return r2(res.filter(function(x){ return x.line.on && x.estado === "pagado"; }).reduce(function(s, x){ return s + x.monto; }, 0)); };
+    var fijos = sumOn(fijosRes), variables = sumOn(variablesRes);
     var sat = r2(satIva + satIsr);
     var disponible = r2(neto - sat - fijos - variables);
     var base = Math.max(0, disponible);
     var pctSum = r2(pcts.reduce(function(s, p){ return s + (Number(p.pct) || 0); }, 0));
-    var buckets = pcts.map(function(p){ return { nombre: p.nombre, pct: Number(p.pct) || 0, monto: r2(base * (Number(p.pct) || 0) / 100) }; });
+    var buckets = pcts.map(function(p, i){
+      var monto = r2(base * (Number(p.pct) || 0) / 100);
+      return { nombre: p.nombre, pct: Number(p.pct) || 0, monto: monto, est: bucketEstado(p, i, monto, plan, mes) };
+    });
     return { cobrado: cobrado, ivaCobrado: iva.cobrado, netoAuto: netoAuto, neto: neto, manual: manual, satIvaAuto: satIvaAuto, satIva: satIva, satIsr: satIsr,
-      sat: sat, fijos: fijos, variables: variables, disponible: disponible, base: base, buckets: buckets, pctSum: pctSum };
+      sat: sat, fijos: fijos, variables: variables, fijosRes: fijosRes, variablesRes: variablesRes,
+      fijosPagado: sumPagado(fijosRes), variablesPagado: sumPagado(variablesRes),
+      disponible: disponible, base: base, buckets: buckets, pctSum: pctSum };
   }
 
-  function repartoLinesHTML(kind, lines) {
-    var rows = lines.length === 0 ? '<tr><td colspan="4" class="hint" style="margin:0;">Sin conceptos todavía.</td></tr>' :
-      lines.map(function(l, i){
+  function repartoStampHTML(x) {
+    if (x.estado === "pagado") return '<span class="stamp stamp-hecho">Pagado</span>';
+    if (x.estado === "sinconfirmar") return '<span class="stamp stamp-en_proceso">Sin confirmar</span>';
+    if (x.estado === "pendiente") return '<span class="stamp stamp-pendiente">Por pagar</span>';
+    if (x.estado === "huerfano") return '<span class="stamp stamp-cancelada">Ya no existe</span>';
+    return '<span class="hint" style="margin:0;">sin vínculo</span>';
+  }
+
+  function repartoLinesHTML(kind, res) {
+    var rows = res.length === 0 ? '<tr><td colspan="5" class="hint" style="margin:0;">Sin conceptos todavía.</td></tr>' :
+      res.map(function(x, i){
+        var l = x.line;
+        var act = x.linked ? '<button type="button" class="link-btn" data-rline-edit="' + escapeHtml(x.expense.id) + '">Editar en Gastos</button> '
+          : (x.rec ? '<button type="button" class="btn-secondary" style="margin-top:0;" data-rline-registrar="' + kind + ':' + i + '">Registrar pago</button> ' : '');
         return '<tr data-rline="' + kind + '" data-idx="' + i + '">' +
-          '<td><input type="checkbox" data-f="on" class="rp-in" style="width:auto;" ' + (l.on ? "checked" : "") + ' aria-label="Incluir" /></td>' +
-          '<td><input type="text" data-f="nombre" class="rp-in" value="' + escapeHtml(l.nombre) + '" placeholder="Concepto" /></td>' +
-          '<td><input type="number" min="0" step="0.01" data-f="monto" class="rp-in" value="' + escapeHtml(String(l.monto)) + '" /></td>' +
-          '<td><button type="button" class="icon-btn" data-rline-del="' + kind + ':' + i + '" aria-label="Quitar">✕</button></td></tr>';
+          '<td data-label=""><input type="checkbox" data-f="on" class="rp-in" style="width:auto;" ' + (l.on ? "checked" : "") + ' aria-label="Incluir" /></td>' +
+          '<td data-label="Concepto"><input type="text" data-f="nombre" class="rp-in" value="' + escapeHtml(l.nombre) + '" placeholder="Concepto" /></td>' +
+          '<td data-label="Monto"><input type="number" min="0" step="0.01" data-f="monto" class="rp-in" value="' + escapeHtml(String(x.monto)) + '"' + (x.linked ? ' disabled title="Viene de Gastos: edítalo allá"' : '') + ' /></td>' +
+          '<td data-label="Estado">' + repartoStampHTML(x) + '</td>' +
+          '<td data-label="">' + act + '<button type="button" class="icon-btn" data-rline-del="' + kind + ':' + i + '" aria-label="Quitar">✕</button></td></tr>';
       }).join("");
-    return '<table><thead><tr><th style="width:30px;"></th><th>Concepto</th><th style="width:150px;">Monto</th><th style="width:34px;"></th></tr></thead><tbody>' + rows + '</tbody></table>';
+    return '<table><thead><tr><th style="width:30px;"></th><th>Concepto</th><th style="width:150px;">Monto</th><th style="width:120px;">Estado</th><th style="width:190px;"></th></tr></thead><tbody>' + rows + '</tbody></table>';
   }
 
   function repartoHTML() {
@@ -2799,15 +2869,35 @@
     var line = function(label, valueHTML, bold){
       return '<div style="display:flex; justify-content:space-between; align-items:center; gap:12px; padding:5px 0; font-size:13px;' + (bold ? " font-weight:700; border-top:1px solid var(--paper-line); margin-top:4px; padding-top:8px;" : "") + '"><span>' + label + '</span>' + valueHTML + '</div>';
     };
+    var subline = function(id, total, pagado){
+      return '<p class="hint" id="' + id + '" style="margin:0 0 4px; text-align:right;">Pagado en Gastos: <strong class="mono">' + currency(pagado) + '</strong> · Por pagar: <strong class="mono">' + currency(Math.max(0, r2(total - pagado))) + '</strong></p>';
+    };
+    var modoOpts = function(sel){
+      return '<option value="apartado"' + (sel === "apartado" ? " selected" : "") + '>Solo apartar (no sale de la empresa)</option>' +
+        CONCEPTOS_EQUIPO.map(function(c){ return '<option value="pago:' + escapeHtml(c) + '"' + (sel === "pago:" + c ? " selected" : "") + '>Pago al equipo — ' + escapeHtml(c) + '</option>'; }).join("");
+    };
+    var paraOpts = function(sel){
+      return state.team.map(function(m){ return '<option value="' + m.id + '"' + (m.id === sel ? " selected" : "") + '>' + escapeHtml(m.name) + '</option>'; }).join("");
+    };
     var bucketRows = r.buckets.map(function(b, i){
+      var p = pcts[i];
+      var esPago = String(p.modo).indexOf("pago:") === 0;
+      var accion = esPago
+        ? '<button type="button" class="btn-secondary" style="margin-top:0;" data-rp-registrar="' + i + '">Registrar pago en Gastos</button>'
+        : (b.est.apartado > 0 ? '<button type="button" class="link-btn" data-rp-desapartar="' + i + '">Deshacer</button> ' : '') +
+          '<button type="button" class="btn-secondary" style="margin-top:0;" data-rp-apartar="' + i + '">Marcar apartado</button>';
       return '<tr><td data-label="Destino"><input type="text" class="rp-in rp-pctname" data-rp-name="' + i + '" value="' + escapeHtml(b.nombre) + '" /></td>' +
-        '<td data-label="%"><input type="number" min="0" max="100" step="0.5" class="rp-in rp-pctval" data-rp-pct="' + i + '" value="' + b.pct + '" style="width:80px;" /></td>' +
-        '<td class="mono amount" data-label="Monto" id="rp-b-' + i + '" style="font-size:15px;">' + currency(b.monto) + '</td></tr>';
+        '<td data-label="%"><input type="number" min="0" max="100" step="0.5" class="rp-in rp-pctval" data-rp-pct="' + i + '" value="' + b.pct + '" style="width:76px;" /></td>' +
+        '<td class="mono amount" data-label="Te toca" id="rp-b-' + i + '" style="font-size:15px;">' + currency(b.monto) + '</td>' +
+        '<td data-label="Se registra como"><select class="rp-sel" data-rp-modo="' + i + '">' + modoOpts(p.modo) + '</select>' +
+          (esPago ? '<select class="rp-sel" data-rp-para="' + i + '" style="margin-top:4px;" aria-label="Para quién">' + paraOpts(p.para) + '</select>' : '') + '</td>' +
+        '<td data-label="Estado" class="hint" id="rp-be-' + i + '" style="margin:0;">' + escapeHtml(estadoTexto(b.est)) + '</td>' +
+        '<td data-label="">' + accion + '</td></tr>';
     }).join("");
 
     return (
       '<h2 class="panel-title">Reparto del mes</h2>' +
-      '<p class="hint">Cuando te pagan: apartas el SAT, los gastos fijos y los variables, y lo que sobra se reparte según tus porcentajes. Todo se guarda por mes y lo puedes ajustar cuando quieras.</p>' +
+      '<p class="hint">Cuando te pagan: apartas el SAT, los gastos fijos y los variables, y lo que sobra se reparte según tus porcentajes. Está ligado a Gastos: lo que ya registraste allá aparece aquí como pagado, y los pagos del reparto se registran en Gastos con un clic.</p>' +
       '<div class="list-header"><input type="month" id="rp-mes" value="' + escapeHtml(mes) + '" />' +
         (cierre ? '<span class="stamp stamp-hecho">Mes cerrado</span>' : '') + '</div>' +
 
@@ -2822,26 +2912,28 @@
 
       '<div class="card"><h3 class="card-title">2. SAT (lo que se aparta)</h3>' +
         '<div class="form-grid">' +
-          '<label>IVA por pagar del mes<input type="number" min="0" step="0.01" id="rp-sat-iva" class="rp-in" value="' + escapeHtml(String(plan.satIva)) + '" placeholder="' + r.satIvaAuto.toFixed(2) + '" /><span class="hint" style="margin:0;">Automático: IVA cobrado menos IVA de tus gastos con factura. Escribe otro monto si tu contador te da uno distinto.</span></label>' +
+          '<label>IVA por pagar del mes<input type="number" min="0" step="0.01" id="rp-sat-iva" class="rp-in" value="' + escapeHtml(String(plan.satIva)) + '" placeholder="' + r.satIvaAuto.toFixed(2) + '" /><span class="hint" style="margin:0;">Automático: IVA cobrado menos IVA de tus gastos con factura (de Gastos). Escribe otro monto si tu contador te da uno distinto.</span></label>' +
           '<label>ISR / otros impuestos (% del ingreso neto)<input type="number" min="0" max="100" step="0.1" id="rp-isr-pct" class="rp-in" value="' + escapeHtml(String(plan.satIsrPct)) + '" /><span class="hint" style="margin:0;">Pon el porcentaje que te indique tu contador según tu régimen.</span></label>' +
         '</div>' +
         line("Total a apartar para el SAT", money("rp-sat-total", r.sat), true) +
       '</div>' +
 
       '<div class="card"><h3 class="card-title">3. Gastos fijos</h3>' +
-        '<p class="hint" style="margin:-6px 0 8px;">Palomea los que sí vas a pagar con este ingreso. Vienen de tus gastos recurrentes; puedes agregar más.</p>' +
-        repartoLinesHTML("fijos", plan.fijos) +
+        '<p class="hint" style="margin:-6px 0 8px;">Palomea los que sí vas a pagar con este ingreso. Los recurrentes se enlazan con Gastos: al registrarlos allá (o con "Registrar pago" aquí) quedan como pagados y toman el monto real.</p>' +
+        repartoLinesHTML("fijos", r.fijosRes) +
         '<div style="display:flex; gap:10px; flex-wrap:wrap;"><button type="button" class="btn-secondary" id="rp-add-fijos">+ Agregar gasto fijo</button>' +
           '<button type="button" class="btn-secondary" id="rp-import-rec">Traer mis recurrentes</button></div>' +
         line("Total gastos fijos", money("rp-fijos-total", r.fijos), true) +
+        subline("rp-fijos-sub", r.fijos, r.fijosPagado) +
       '</div>' +
 
       '<div class="card"><h3 class="card-title">4. Gastos variables</h3>' +
-        '<p class="hint" style="margin:-6px 0 8px;">Lo que cambia cada mes (publicidad, viáticos, compras). Puedes traer los que ya registraste en Gastos o escribirlos a mano.</p>' +
-        repartoLinesHTML("variables", plan.variables) +
+        '<p class="hint" style="margin:-6px 0 8px;">Lo que cambia cada mes. Los que traes de Gastos se mantienen ligados: si cambias el monto allá, se actualiza aquí.</p>' +
+        repartoLinesHTML("variables", r.variablesRes) +
         '<div style="display:flex; gap:10px; flex-wrap:wrap;"><button type="button" class="btn-secondary" id="rp-add-variables">+ Agregar gasto variable</button>' +
           '<button type="button" class="btn-secondary" id="rp-import-var">Traer gastos del mes</button></div>' +
         line("Total gastos variables", money("rp-var-total", r.variables), true) +
+        subline("rp-var-sub", r.variables, r.variablesPagado) +
       '</div>' +
 
       '<div class="card"><h3 class="card-title">5. Lo que sobra y cómo se reparte</h3>' +
@@ -2851,11 +2943,12 @@
         line("− Gastos variables", '<span class="mono" id="rp-s-var">' + currency(r.variables) + '</span>') +
         line("Disponible para repartir", '<span class="mono" id="rp-disp" style="font-size:18px; color:' + (r.disponible < 0 ? "var(--stamp-red)" : "var(--stamp-green)") + ';">' + currency(r.disponible) + '</span>', true) +
         '<p class="hint" id="rp-neg" style="margin:6px 0 10px; color:var(--stamp-red);' + (r.disponible < 0 ? "" : " display:none;") + '">⚠ Los apartados superan el ingreso: no queda nada que repartir este mes. Revisa gastos o el monto de ingreso.</p>' +
-        '<table style="margin-top:8px;"><thead><tr><th>Destino</th><th style="width:100px;">%</th><th style="width:170px;">Te toca</th></tr></thead><tbody>' + bucketRows + '</tbody></table>' +
+        '<div style="overflow-x:auto;"><table style="margin-top:8px;"><thead><tr><th>Destino</th><th style="width:90px;">%</th><th style="width:130px;">Te toca</th><th style="width:230px;">Se registra como</th><th style="width:210px;">Estado</th><th style="width:200px;"></th></tr></thead><tbody>' + bucketRows + '</tbody></table></div>' +
         '<div style="display:flex; justify-content:space-between; gap:12px; flex-wrap:wrap; margin-top:8px;">' +
           '<span class="hint" id="rp-pctsum" style="margin:0; color:' + (r.pctSum === 100 ? "var(--stamp-green)" : "var(--stamp-red)") + ';">Los porcentajes suman ' + r.pctSum + '%' + (r.pctSum === 100 ? " ✓" : " — deben sumar 100%") + '</span>' +
           '<span class="hint" style="margin:0;">Pagos al equipo ya registrados en Gastos este mes: <strong class="mono">' + currency(pagosEquipoMes) + '</strong></span>' +
         '</div>' +
+        '<p class="hint" style="margin:8px 0 0;">"Registrar pago en Gastos" crea el pago al equipo (queda pendiente de confirmar con clave). "Marcar apartado" es para dinero que se queda en la empresa (reinversión, fondo de emergencia) y no se registra como gasto.</p>' +
       '</div>'
     );
   }
@@ -2878,10 +2971,18 @@
   }
 
   function readRepartoPcts() {
+    var current = repartoPcts();
     var pcts = [];
     document.querySelectorAll("[data-rp-pct]").forEach(function(inp){
       var i = Number(inp.dataset.rpPct);
-      pcts[i] = { nombre: document.querySelector('[data-rp-name="' + i + '"]').value, pct: Number(inp.value) || 0 };
+      var modoEl = document.querySelector('[data-rp-modo="' + i + '"]');
+      var paraEl = document.querySelector('[data-rp-para="' + i + '"]');
+      pcts[i] = {
+        nombre: document.querySelector('[data-rp-name="' + i + '"]').value,
+        pct: Number(inp.value) || 0,
+        modo: modoEl ? modoEl.value : (current[i] ? current[i].modo : "apartado"),
+        para: paraEl ? paraEl.value : (current[i] ? current[i].para : "")
+      };
     });
     return pcts;
   }
@@ -2897,7 +2998,12 @@
     set("rp-disp", currency(r.disponible));
     var disp = document.getElementById("rp-disp"); if (disp) disp.style.color = r.disponible < 0 ? "var(--stamp-red)" : "var(--stamp-green)";
     var neg = document.getElementById("rp-neg"); if (neg) neg.style.display = r.disponible < 0 ? "" : "none";
-    r.buckets.forEach(function(b, i){ set("rp-b-" + i, currency(b.monto)); });
+    r.buckets.forEach(function(b, i){ set("rp-b-" + i, currency(b.monto)); set("rp-be-" + i, estadoTexto(b.est)); });
+    var sub = function(id, total, pagado){
+      var el = document.getElementById(id);
+      if (el) el.innerHTML = 'Pagado en Gastos: <strong class="mono">' + currency(pagado) + '</strong> · Por pagar: <strong class="mono">' + currency(Math.max(0, r2(total - pagado))) + '</strong>';
+    };
+    sub("rp-fijos-sub", r.fijos, r.fijosPagado); sub("rp-var-sub", r.variables, r.variablesPagado);
     var ps = document.getElementById("rp-pctsum");
     if (ps) { ps.textContent = "Los porcentajes suman " + r.pctSum + "%" + (r.pctSum === 100 ? " ✓" : " — deben sumar 100%"); ps.style.color = r.pctSum === 100 ? "var(--stamp-green)" : "var(--stamp-red)"; }
   }
@@ -2911,6 +3017,7 @@
   }
 
   function bindRepartoEvents() {
+    var mes = state.repartoMes;
     document.getElementById("rp-mes").addEventListener("change", function(e){
       if (!e.target.value) return;
       state.repartoMes = e.target.value;
@@ -2918,12 +3025,15 @@
     });
     document.querySelectorAll(".rp-in").forEach(function(el){
       el.addEventListener("input", refreshRepartoResult);
-      el.addEventListener("change", persistReparto);
+      el.addEventListener("change", function(){ persistReparto(false); });
+    });
+    document.querySelectorAll(".rp-sel").forEach(function(el){
+      el.addEventListener("change", async function(){ await persistReparto(); renderTabContent(); });
     });
     ["fijos", "variables"].forEach(function(kind){
       document.getElementById("rp-add-" + kind).addEventListener("click", async function(){
         syncRepartoFromDOM();
-        getRepartoPlan(state.repartoMes)[kind].push({ id: uid(), nombre: "", monto: 0, on: true, fuente: "manual" });
+        getRepartoPlan(mes)[kind].push({ id: uid(), nombre: "", monto: 0, on: true, fuente: "manual" });
         await persistReparto(true); renderTabContent();
       });
     });
@@ -2931,13 +3041,35 @@
       btn.addEventListener("click", async function(){
         syncRepartoFromDOM();
         var parts = btn.dataset.rlineDel.split(":");
-        getRepartoPlan(state.repartoMes)[parts[0]].splice(Number(parts[1]), 1);
+        getRepartoPlan(mes)[parts[0]].splice(Number(parts[1]), 1);
         await persistReparto(true); renderTabContent();
+      });
+    });
+    document.querySelectorAll("[data-rline-edit]").forEach(function(btn){
+      btn.addEventListener("click", function(){
+        var exp = state.expenses.find(function(x){ return x.id === btn.dataset.rlineEdit; });
+        if (!exp) return;
+        state.tab = "gastos";
+        state.gastosMonthFilter = (exp.date || "").slice(0, 7) || state.gastosMonthFilter;
+        document.querySelectorAll(".tab").forEach(function(b){ b.classList.toggle("tab-active", b.dataset.tab === "gastos"); });
+        startEditExpense(exp.id);
+      });
+    });
+    document.querySelectorAll("[data-rline-registrar]").forEach(function(btn){
+      btn.addEventListener("click", async function(){
+        syncRepartoFromDOM();
+        var parts = btn.dataset.rlineRegistrar.split(":");
+        var l = getRepartoPlan(mes)[parts[0]][Number(parts[1])];
+        var rid = l && l.fuente && l.fuente.indexOf("rec:") === 0 ? l.fuente.slice(4) : null;
+        var t = rid ? state.recurrentes.find(function(x){ return x.id === rid; }) : null;
+        if (!t) { flash("Ese recurrente ya no existe.", true); return; }
+        if (!confirm("¿Registrar en Gastos \"" + t.nombre + "\" por " + currency(t.amount) + "?\n\nQuedará pendiente de confirmar con clave.")) return;
+        await registrarRecurrente(rid, fechaEnMes(mes));
       });
     });
     document.getElementById("rp-import-rec").addEventListener("click", async function(){
       syncRepartoFromDOM();
-      var plan = getRepartoPlan(state.repartoMes);
+      var plan = getRepartoPlan(mes);
       var have = plan.fijos.map(function(l){ return l.fuente; });
       var added = 0;
       state.recurrentes.filter(function(t){ return t.activo !== false && t.tipo !== "pago_equipo" && have.indexOf("rec:" + t.id) === -1; }).forEach(function(t){
@@ -2948,16 +3080,54 @@
     });
     document.getElementById("rp-import-var").addEventListener("click", async function(){
       syncRepartoFromDOM();
-      var plan = getRepartoPlan(state.repartoMes);
+      var plan = getRepartoPlan(mes);
       var have = plan.variables.map(function(l){ return l.fuente; });
       var added = 0;
-      state.expenses.filter(isFullyConfirmed).filter(function(e){
-        return inMonth(e.date, state.repartoMes) && e.tipo !== "pago_equipo" && !esPagoSat(e) && !e.recurrenteId && have.indexOf("gasto:" + e.id) === -1;
+      state.expenses.filter(function(e){
+        return inMonth(e.date, mes) && e.tipo !== "pago_equipo" && !esPagoSat(e) && !e.recurrenteId && have.indexOf("gasto:" + e.id) === -1;
       }).forEach(function(e){
         plan.variables.push({ id: uid(), nombre: e.description || e.category, monto: Number(e.amount) || 0, on: true, fuente: "gasto:" + e.id }); added++;
       });
       flash(added ? added + " gasto(s) del mes agregado(s)." : "No hay gastos nuevos de este mes que traer.");
       await persistReparto(true); renderTabContent();
+    });
+    document.querySelectorAll("[data-rp-registrar]").forEach(function(btn){
+      btn.addEventListener("click", async function(){
+        var i = Number(btn.dataset.rpRegistrar);
+        var pcts = syncRepartoFromDOM();
+        var plan = getRepartoPlan(mes);
+        var r = repartoCalc(mes, plan, pcts);
+        var b = r.buckets[i], p = pcts[i];
+        if (b.est.falta <= 0) { flash(b.monto > 0 ? "Este destino ya está cubierto en Gastos." : "No hay monto que registrar en este destino.", true); return; }
+        var concepto = String(p.modo).slice(5);
+        if (!confirm("¿Registrar en Gastos un pago de " + currency(b.est.falta) + " a " + memberName(p.para) + " como " + concepto + "?\n\nQuedará pendiente de confirmar con clave.")) return;
+        var payer = state.team.some(function(m){ return m.id === state.authId; }) ? state.authId : (state.team[0] && state.team[0].id);
+        await persistReparto(true);
+        await addExpense({
+          amount: b.est.falta, category: CAT_EQUIPO, paidBy: payer, metodo: "Transferencia", date: fechaEnMes(mes),
+          description: "Reparto " + mesLabel(mes) + " — " + b.nombre, tipo: "pago_equipo", beneficiario: p.para, concepto: concepto
+        }, null);
+      });
+    });
+    document.querySelectorAll("[data-rp-apartar]").forEach(function(btn){
+      btn.addEventListener("click", async function(){
+        var i = Number(btn.dataset.rpApartar);
+        var pcts = syncRepartoFromDOM();
+        var plan = getRepartoPlan(mes);
+        var r = repartoCalc(mes, plan, pcts);
+        plan.apartado[i] = r.buckets[i].monto;
+        await persistReparto(true);
+        flash("Marcado como apartado: " + currency(r.buckets[i].monto) + ".");
+        renderTabContent();
+      });
+    });
+    document.querySelectorAll("[data-rp-desapartar]").forEach(function(btn){
+      btn.addEventListener("click", async function(){
+        syncRepartoFromDOM();
+        delete getRepartoPlan(mes).apartado[Number(btn.dataset.rpDesapartar)];
+        await persistReparto(true);
+        renderTabContent();
+      });
     });
   }
 
